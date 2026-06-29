@@ -1,0 +1,148 @@
+========================================
+go-tdx-mcp Function Test Results
+Date: 2026-06-29 06:32:11
+Server: http://localhost:8000
+========================================
+
+[PASS] (Health Check) GET http://localhost:8000/api/v1/health
+  HTTP Status: 200
+  Response: {"status": "ok", "version": "1.0.0"}
+
+[PASS] (Server Info) GET http://localhost:8000/api/v1/server-info
+  HTTP Status: 200
+  Response: {"data_sources": ["TDX TCP", "EastMoney API", "Sina Finance"], "status": "running", "timestamp": "2026-06-29T06:32:11Z", "version": "1.0.0"}
+
+[PASS] (Quotes GET) GET http://localhost:8000/api/v1/quotes?codes=SZ000001,SH600000
+  HTTP Status: 200
+  Response: [{"data": {"f116": 198716602347.52, "f117": 198713350686.72, "f162": 342, "f168": 52, "f169": 1, "f170": 10, "f171": 293, "f43": 1024, "f44": 1032, "f45": 1002, "f46": 1022, "f47": 1017921, "f48": 103
+
+[PASS] (Bars) GET http://localhost:8000/api/v1/bars?code=000001&market=sz&period=day&count=5
+  HTTP Status: 200
+  Response: [{"Open": 1011, "High": 1012, "Low": 999, "Close": 1001, "Vol": 8188104, "Amount": 290336946}, {"Open": 1007, "High": 1022, "Low": 1003, "Close": 1018, "Vol": 3812502, "Amount": 92271906}, {"Open": 10
+
+[PASS] (Financial Report) GET http://localhost:8000/api/v1/financial/report?code=000001&type=lrb
+  HTTP Status: 200
+  Response: {"code": 0, "message": "ok", "result": {"count": 121, "data": [{"COMPENSATE_EXPENSE": null, "DATA_STATE": "2", "DATE_TYPE_CODE": "001", "DEDUCT_PARENT_NETPROFIT": null, "DPN_RATIO": null, "EARNED_PREM
+
+[PASS] (Announcements) GET http://localhost:8000/api/v1/announcements?code=000001&count=3
+  HTTP Status: 200
+  Response: {"data": {"list": [{"art_code": "AN202601071816773188", "codes": [], "columns": [{"column_code": "005003013", "column_name": "集合理财其他公告"}], "display_time": "2026-01-07 16:57:51:582", "eiTime": "2026-01
+
+[PASS] (Macro Data) GET http://localhost:8000/api/v1/macro-data?indicator=CPI&count=3
+  HTTP Status: 200
+  Response: {"count": 3, "data": [{"date": "2026-05-01 00:00:00", "value": 1.2, "indicator": "CPI_YoY", "unit": "%"}, {"date": "2026-04-01 00:00:00", "value": 1.2, "indicator": "CPI_YoY", "unit": "%"}, {"date": "
+
+[PASS] (Market Overview) GET http://localhost:8000/api/v1/market-overview
+  HTTP Status: 200
+  Response: {"board_data": [{"amount": 13556938399, "amplitude": 10.27, "change_amt": 578.81, "change_pct": 8.6, "down_count": 1, "lead_stock_chg": 20, "lead_stock_code": "688336", "lead_stock_name": "三生国健", "mai
+
+[PASS] (Indicator List) GET http://localhost:8000/api/v1/indicator/list
+  HTTP Status: 200
+  Response: {"count": 34, "indicators": ["MACD", "KDJ", "RSI", "BOLL", "DMI", "ATR", "WR", "CCI", "BIAS", "BIAS_SIGNAL", "OBV", "VR", "EMV", "MFI", "BRAR", "ASI", "TRIX", "DPO", "MTM", "ROC", "EXPMA", "BBI", "PSY
+
+[PASS] (Indicator Compute) GET http://localhost:8000/api/v1/indicator/compute_all?code=000001&market=sz&indicators=MACD,KDJ
+  HTTP Status: 200
+  Response: {"KDJ": {"Values": [50, 33.333333333333336, 22.222222222222225, 14.814814814814818, 9.876543209876546, 6.584362139917698, 4.389574759945133, 2.9263831732967556, 17.542319964993535, 14.92068642827526, 
+
+[PASS] (Indicator Compute lowercase) GET http://localhost:8000/api/v1/indicator/compute_all?code=000001&market=sz&indicators=macd,kdj
+  HTTP Status: 200
+  Response: {"KDJ": {"Values": [50, 33.333333333333336, 22.222222222222225, 14.814814814814818, 9.876543209876546, 6.584362139917698, 4.389574759945133, 2.9263831732967556, 17.542319964993535, 14.92068642827526, 
+
+[PASS] (Indicator Compute MA) GET http://localhost:8000/api/v1/indicator/compute_all?code=000001&market=sz&indicators=MA
+  HTTP Status: 200
+  Response: {"MA": {"Values": [0, 0, 0, 0, 1027.8, 1031.6, 1036.8, 1034.6, 1028.8, 1026.2, 1018, 1018.4, 1015.2, 1009.6, 1008.6, 1004, 1009, 1010.4, 1016.6, 1020.6, 1024, 1013, 1016.4, 1014.4, 1008.4, 1009.6, 101
+
+[PASS] (Chanlun Analyze) GET http://localhost:8000/api/v1/chanlun/analyze?code=000001&market=sz&period=day&count=30
+  HTTP Status: 200
+  Response: {"Symbol": "", "Period": "", "OrigCount": 30, "MergedCount": 29, "FenXingCount": 19, "BiList": [{"Index": 0, "Direction": "up", "StartDate": "", "EndDate": "", "StartIdx": 1, "EndIdx": 6, "High": 1041
+
+[PASS] (Backtest Run) GET http://localhost:8000/api/v1/backtest/run?code=000001&market=sz&strategy=ma_cross&count=30
+  HTTP Status: 200
+  Response: {"strategy": "ma_cross", "code": "000001", "market": 0, "period": "day", "initial_cash": 1000000, "final_equity": 1024171.4447433002, "bar_count": 30, "performance": {"total_return": 24171.44474330020
+
+[PASS] (News Sentiment) GET http://localhost:8000/api/v1/news-sentiment?code=000001&count=3
+  HTTP Status: 200
+  Response: {"code": "000001", "count": 3, "data": {"data": {"list": [{"art_code": "AN202601071816773188", "codes": [], "columns": [{"column_code": "005003013", "column_name": "集合理财其他公告"}], "display_time": "2026-
+
+[PASS] (Board List) GET http://localhost:8000/api/v1/board/list?board_type=HY&top_n=5
+  HTTP Status: 200
+  Response: {"board_type": "HY", "count": 50, "data": [{"amount": 5937218994, "amplitude": 11.36, "change_amt": 74.76, "change_pct": 9.03, "down_count": 0, "lead_stock_chg": 20, "lead_stock_code": "688336", "lead
+
+[PASS] (Board Members) GET http://localhost:8000/api/v1/board/members?board_symbol=BK1717&count=5
+  HTTP Status: 200
+  Response: {"board_symbol": "BK1717", "count": 5, "data": [{"stock_code": "688432", "stock_name": "有研硅"}, {"stock_code": "300346", "stock_name": "南大光电"}, {"stock_code": "601133", "stock_name": "柏诚股份"}, {"stock_c
+
+[PASS] (Board Ranking) GET http://localhost:8000/api/v1/board/ranking?board_type=HY&top_n=5
+  HTTP Status: 200
+  Response: {"board_type": "HY", "data": [{"amount": 5936969354, "amplitude": 11.36, "change_amt": 74.76, "change_pct": 9.03, "down_count": 0, "lead_stock_chg": 20, "lead_stock_code": "688336", "lead_stock_name":
+
+[PASS] (Capital Flow) GET http://localhost:8000/api/v1/capital-flow?code=000001&market=sz
+  HTTP Status: 200
+  Response: {"code": "000001", "count": 1, "data": [{"time": "2026-06-29", "north_net_in": 0, "south_net_in": 5200000, "north_cum_in": 0, "south_cum_in": 0}], "market": 0}
+
+[PASS] (Auction) GET http://localhost:8000/api/v1/auction?code=000001&market=sz
+  HTTP Status: 200
+  Response: {"data": {"f43": 1024, "f44": 1032, "f45": 1002, "f46": 1022, "f47": 1017921, "f48": 1035415995.12, "f49": 496164}, "dlmkts": "8,10,128", "dsc": "0", "full": 1, "lt": 1, "rc": 0, "rt": 4, "svr": 17762
+
+[PASS] (Unusual) GET http://localhost:8000/api/v1/unusual?market=sz&count=5
+  HTTP Status: 200
+  Response: {"count": 5, "data": [{"change_amt": 1.99, "change_pct": 7.4, "code": "600667", "name": "太极实业", "price": 28.87, "rank": 1, "tag": {"concept_tag": ["存储芯片", "先进封装"], "live_tag": {"anchor": "大同证券连张磊", "j
+
+[PASS] (Market Stat) GET http://localhost:8000/api/v1/market-stat
+  HTTP Status: 200
+  Response: {"data": {"diff": [{"f3": 212.42}], "total": 12373}, "dlmkts": "8,10,128", "dsc": "0", "full": 1, "lt": 1, "rc": 0, "rt": 6, "svr": 177622162}
+
+[PASS] (Symbol Info) GET http://localhost:8000/api/v1/symbol-info?code=000001&market=sz
+  HTTP Status: 200
+  Response: {"data": {"f116": 198716602347.52, "f117": 198713350686.72, "f162": 342, "f168": 52, "f169": 1, "f170": 10, "f171": 293, "f43": 1024, "f44": 1032, "f45": 1002, "f46": 1022, "f47": 1017921, "f48": 1035
+
+[PASS] (Quote List) GET http://localhost:8000/api/v1/quote-list?count=5&sort_type=change_pct
+  HTTP Status: 200
+  Response: {"data": {"diff": [{"f10": 0.97, "f11": 0, "f12": "000001", "f14": "平安银行", "f15": 10.32, "f16": 10.02, "f17": 10.22, "f18": 10.23, "f2": 10.24, "f20": 198716602348, "f21": 198713350687, "f22": 0.1, "f
+
+[PASS] (Security Count) GET http://localhost:8000/api/v1/security-count?market=SZ
+  HTTP Status: 200
+  Response: {"data": {"diff": [{"f3": 20}], "total": 3079}, "dlmkts": "8,10,128", "dsc": "0", "full": 1, "lt": 1, "rc": 0, "rt": 6, "svr": 177622157}
+
+[PASS] (Belong Board) GET http://localhost:8000/api/v1/belong-board?code=000001&market=sz
+  HTTP Status: 200
+  Response: {"data": null, "dlmkts": "8,10,128", "dsc": "0", "full": 1, "lt": 1, "rc": 102, "rt": 1, "svr": 177622160}
+
+[PASS] (Block Data) GET http://localhost:8000/api/v1/block?filename=gn.dat
+  HTTP Status: 200
+  Response: {"board_type": "concept", "count": 494, "data": [{"amount": 5937218994, "amplitude": 11.36, "change_amt": 74.76, "change_pct": 9.03, "down_count": 0, "lead_stock_chg": 20, "lead_stock_code": "688336",
+
+[PASS] (Ex Markets) GET http://localhost:8000/api/v1/ex/markets
+  HTTP Status: 200
+  Response: [{"code": "HK_MAIN_BOARD", "name": "港股主板", "category": "stock"}, {"code": "HK_GEM_BOARD", "name": "港股创业板", "category": "stock"}, {"code": "US_STOCK", "name": "美股", "category": "stock"}, {"code": "FT_F
+
+[PASS] (Ex Quote HK) GET http://localhost:8000/api/v1/ex/quote?ex_market=hk&code=00700
+  HTTP Status: 200
+  Response: {"data": {"f43": 421600, "f44": 432000, "f45": 415000, "f46": 417000, "f47": 24103512, "f48": 10178536704, "f49": 13864421, "f50": 90, "f51": 677700, "f52": 411000, "f55": 28.865010272, "f57": "00700"
+
+[PASS] (Ex Bars HK) GET http://localhost:8000/api/v1/ex/bars?ex_market=hk&code=00700
+  HTTP Status: 200
+  Response: {"code": "00700", "ex_market": "hk", "quote_data": {"data": {"f43": 421600, "f44": 432000, "f45": 415000, "f46": 417000, "f47": 24103512, "f48": 10178536704, "f49": 13864421, "f50": 90, "f51": 677700,
+
+[PASS] (Offline Home) GET http://localhost:8000/api/v1/offline/home
+  HTTP Status: 200
+  Response: {"found": true, "home": "."}
+
+[PASS] (Scraper Crypto) GET http://localhost:8000/api/v1/scraper/crypto
+  HTTP Status: 200
+  Response: {"count": 2, "data": [{"symbol": "BTC", "name": "", "price": 112500, "change": 2.5, "change_pct": 2.5, "high_24h": 113200, "low_24h": 109800, "volume_24h": 28500000000, "market_cap": 2220000000000, "s
+
+[PASS] (Scraper Fund Holding) GET http://localhost:8000/api/v1/scraper/fund-holding?fund_code=169103&period=2025Q1
+  HTTP Status: 200
+  Response: {"fund_code": "169103", "fund_name": "东方红睿轩三年持有混合", "report_type": "", "period": "2026年Q1", "holdings": [{"stock_code": "02057", "stock_name": "中通快递-W", "proportion": 8.26, "change": "", "shares": 40.
+
+[PASS] (Northbound Flow) GET http://localhost:8000/api/v1/scraper/northbound-flow
+  HTTP Status: 200
+  Response: {"count": 1, "data": [{"time": "2026-06-29", "north_net_in": 0, "south_net_in": 5200000, "north_cum_in": 0, "south_cum_in": 0}]}
+
+========================================
+SUMMARY
+========================================
+Total endpoints tested: 34
+Passed: 34
+Failed: 0
