@@ -92,6 +92,10 @@ func (s *Server) Start() error {
 	return http.ListenAndServe(s.addr, s.mux)
 }
 
+func (s *Server) Handler() http.Handler {
+	return s.mux
+}
+
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/health", s.handleHealth)
 	s.mux.HandleFunc("/", s.handleRoot)

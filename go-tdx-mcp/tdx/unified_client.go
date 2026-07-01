@@ -10,25 +10,36 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tdx/go-tdx-mcp/backtest"
+	"github.com/tdx/go-tdx-mcp/chanlun"
+	"github.com/tdx/go-tdx-mcp/factor"
+	"github.com/tdx/go-tdx-mcp/indicator"
 	"github.com/tdx/go-tdx-mcp/scraper"
 )
 
 // UnifiedClient wraps both HTTP (TQLEX) and TCP clients with automatic fallback.
 type UnifiedClient struct {
-	httpClient       *HTTPClient
-	tcpClient        *TDXTCPClient
-	collector        *MultiHostCollector
-	sectorScraper    *scraper.SectorScraper
-	macroScraper     *scraper.MacroScraper
-	northScraper     *scraper.NorthboundScraper
-	fundNavClient    *scraper.FundNavClient
+	httpClient        *HTTPClient
+	tcpClient         *TDXTCPClient
+	collector         *MultiHostCollector
+	sectorScraper     *scraper.SectorScraper
+	macroScraper      *scraper.MacroScraper
+	northScraper      *scraper.NorthboundScraper
+	fundNavClient     *scraper.FundNavClient
 	marginTradeClient *scraper.MarginTradeWebClient
-	initOnce         sync.Once
-	initErr          error
-	useCollector     bool
-	useScraper       bool
-	useMacroScraper  bool
-	useNorthScraper  bool
+	eastMoneyScraper  *scraper.EastMoneyScraper
+	blockTradeClient  *scraper.BlockTradeClient
+	fundHoldingClient *scraper.FundHoldingClient
+	sinaClient        *scraper.SinaClient
+	tableParser       *scraper.TableParser
+	backtestEngine    *backtest.Engine
+	initOnce          sync.Once
+	initErr           error
+	useCollector      bool
+	useScraper        bool
+	useMacroScraper   bool
+	useNorthScraper   bool
+	scrapersInitOnce  sync.Once
 }
 
 // NewUnifiedClient creates a unified client with both HTTP and TCP backends.
@@ -1037,4 +1048,286 @@ func (uc *UnifiedClient) GetMarginTrade() ([]*scraper.MarginTradeData, error) {
 		return uc.marginTradeClient.GetSummary()
 	}
 	return nil, fmt.Errorf("margin trade client not configured")
+}
+
+func (uc *UnifiedClient) initScrapers() {
+	uc.scrapersInitOnce.Do(func() {
+		uc.eastMoneyScraper = scraper.NewEastMoneyScraper()
+		uc.blockTradeClient = scraper.NewBlockTradeClient()
+		uc.fundHoldingClient = scraper.NewFundHoldingClient()
+		uc.sinaClient = scraper.NewSinaClient()
+		uc.tableParser = scraper.NewTableParser()
+	})
+}
+
+func (uc *UnifiedClient) initBacktest() {
+	if uc.backtestEngine == nil {
+		uc.backtestEngine = backtest.NewEngine(1000000)
+	}
+}
+
+// LimitUpPool returns the daily limit-up stock pool.
+func (uc *UnifiedClient) LimitUpPool(date string) ([]map[string]interface{}, error) {
+	uc.initScrapers()
+	return uc.eastMoneyScraper.LimitUpPool(date)
+}
+
+// LimitDownPool returns the daily limit-down stock pool.
+func (uc *UnifiedClient) LimitDownPool(date string) ([]map[string]interface{}, error) {
+	uc.initScrapers()
+	return uc.eastMoneyScraper.LimitDownPool(date)
+}
+
+// YesterdayLimitUp returns yesterday's limit-up stocks' today performance.
+func (uc *UnifiedClient) YesterdayLimitUp(date string) ([]map[string]interface{}, error) {
+	uc.initScrapers()
+	return uc.eastMoneyScraper.YesterdayLimitUp(date)
+}
+
+// HotRank returns the hot search ranking from THS.
+func (uc *UnifiedClient) HotRank(limit int) ([]map[string]interface{}, error) {
+	uc.initScrapers()
+	return uc.eastMoneyScraper.HotRank(limit)
+}
+
+// NorthBoundTop10 returns northbound top 10 traded stocks.
+func (uc *UnifiedClient) NorthBoundTop10(date string) ([]map[string]interface{}, error) {
+	uc.initScrapers()
+	return uc.eastMoneyScraper.NorthBoundTop10(date)
+}
+
+// MarketIndices returns the market index list.
+func (uc *UnifiedClient) MarketIndices() ([]map[string]interface{}, error) {
+	uc.initScrapers()
+	return uc.eastMoneyScraper.MarketIndices()
+}
+
+// SecurityList returns a generic security list query.
+func (uc *UnifiedClient) SecurityList(fs, fields string, pn, pz int) ([]map[string]interface{}, error) {
+	uc.initScrapers()
+	return uc.eastMoneyScraper.SecurityList(fs, fields, pn, pz)
+}
+
+// SecurityCount returns security count statistics.
+func (uc *UnifiedClient) SecurityCount(secid string) (map[string]interface{}, error) {
+	uc.initScrapers()
+	return uc.eastMoneyScraper.SecurityCount(secid)
+}
+
+// StockBelongSector queries sectors for multiple stocks.
+func (uc *UnifiedClient) StockBelongSector(codes []string) ([]map[string]interface{}, error) {
+	uc.initScrapers()
+	return uc.eastMoneyScraper.StockBelongSector(codes)
+}
+
+// GetBlockTradesByDate queries block trades by date.
+func (uc *UnifiedClient) GetBlockTradesByDate(date string, limit int) ([]*scraper.BlockTradeData, error) {
+	uc.initScrapers()
+	return uc.blockTradeClient.GetBlockTradesByDate(date, limit)
+}
+
+// SearchBlockTrades searches block trades by keyword.
+func (uc *UnifiedClient) SearchBlockTrades(keyword string, limit int) ([]*scraper.BlockTradeData, error) {
+	uc.initScrapers()
+	return uc.blockTradeClient.SearchBlockTrades(keyword, limit)
+}
+
+// GetFundCompanies returns the list of all fund companies.
+func (uc *UnifiedClient) GetFundCompanies() ([]*scraper.FundCompanyInfo, error) {
+	uc.initScrapers()
+	return uc.fundHoldingClient.GetFundCompanies()
+}
+
+// GetMoneySupply returns M2 money supply data.
+func (uc *UnifiedClient) GetMoneySupply(count int) ([]scraper.MacroIndicator, error) {
+	if uc.macroScraper != nil {
+		return uc.macroScraper.GetMoneySupply(count)
+	}
+	return nil, fmt.Errorf("macro scraper not configured")
+}
+
+// GetGlobalIndicator returns global macroeconomic indicators.
+func (uc *UnifiedClient) GetGlobalIndicator(country, indicator string) (*scraper.MacroIndicator, error) {
+	if uc.macroScraper != nil {
+		return uc.macroScraper.GetGlobalIndicator(country, indicator)
+	}
+	return nil, fmt.Errorf("macro scraper not configured")
+}
+
+// GetMarginTrade (Sina) fetches margin trading data from Sina Finance.
+func (uc *UnifiedClient) GetSinaMarginTrade(limit int) ([]*scraper.SinaMarginData, error) {
+	uc.initScrapers()
+	return uc.sinaClient.GetMarginTrade(limit)
+}
+
+// GetBlockTrades (Sina) fetches block trades from Sina Finance.
+func (uc *UnifiedClient) GetSinaBlockTrades(limit int) ([]*scraper.SinaBlockTradeData, error) {
+	uc.initScrapers()
+	return uc.sinaClient.GetBlockTrades(limit)
+}
+
+// EastMoney Realtime Quote delegation
+func (uc *UnifiedClient) EastMoneyRealtimeQuote(codes []string) ([]map[string]interface{}, error) {
+	uc.initScrapers()
+	if uc.eastMoneyScraper == nil {
+		return nil, fmt.Errorf("east money scraper not configured")
+	}
+	return uc.eastMoneyScraper.RealtimeQuote(codes)
+}
+
+// EastMoney Kline History delegation
+func (uc *UnifiedClient) EastMoneyKlineHistory(secid, klt string, count int) ([]map[string]interface{}, error) {
+	uc.initScrapers()
+	if uc.eastMoneyScraper == nil {
+		return nil, fmt.Errorf("east money scraper not configured")
+	}
+	return uc.eastMoneyScraper.KlineHistory(secid, klt, count)
+}
+
+// EastMoney Stock Changes delegation
+func (uc *UnifiedClient) EastMoneyStockChanges(changeType string) ([]map[string]interface{}, error) {
+	uc.initScrapers()
+	if uc.eastMoneyScraper == nil {
+		return nil, fmt.Errorf("east money scraper not configured")
+	}
+	return uc.eastMoneyScraper.StockChanges(changeType)
+}
+
+// EastMoney Symbol Info delegation
+func (uc *UnifiedClient) EastMoneySymbolInfo(secid string) (map[string]interface{}, error) {
+	uc.initScrapers()
+	if uc.eastMoneyScraper == nil {
+		return nil, fmt.Errorf("east money scraper not configured")
+	}
+	return uc.eastMoneyScraper.SymbolInfo(secid)
+}
+
+// EastMoney Sector Boards delegation
+func (uc *UnifiedClient) EastMoneySectorBoards(boardType string) ([]map[string]interface{}, error) {
+	uc.initScrapers()
+	if uc.eastMoneyScraper == nil {
+		return nil, fmt.Errorf("east money scraper not configured")
+	}
+	return uc.eastMoneyScraper.SectorBoards(boardType)
+}
+
+// EastMoney Sector Stocks delegation
+func (uc *UnifiedClient) EastMoneySectorStocks(boardCode string) ([]map[string]interface{}, error) {
+	uc.initScrapers()
+	if uc.eastMoneyScraper == nil {
+		return nil, fmt.Errorf("east money scraper not configured")
+	}
+	return uc.eastMoneyScraper.SectorStocks(boardCode)
+}
+
+// EastMoney UpDown Count delegation
+func (uc *UnifiedClient) EastMoneyUpDownCount(date string) (map[string]interface{}, error) {
+	uc.initScrapers()
+	if uc.eastMoneyScraper == nil {
+		return nil, fmt.Errorf("east money scraper not configured")
+	}
+	return uc.eastMoneyScraper.UpDownCount(date)
+}
+
+// EastMoney Belong Board delegation
+func (uc *UnifiedClient) EastMoneyBelongBoard(secid string) ([]map[string]interface{}, error) {
+	uc.initScrapers()
+	if uc.eastMoneyScraper == nil {
+		return nil, fmt.Errorf("east money scraper not configured")
+	}
+	return uc.eastMoneyScraper.BelongBoard(secid)
+}
+
+// Fund Nav Latest delegation
+func (uc *UnifiedClient) FundNavLatest(fundCode string) (*scraper.FundNav, error) {
+	uc.initScrapers()
+	return uc.fundNavClient.GetLatestNAV(fundCode)
+}
+
+// Fund Nav History delegation
+func (uc *UnifiedClient) FundNavHistory(fundCode string, limit int) ([]*scraper.FundNav, error) {
+	uc.initScrapers()
+	return uc.fundNavClient.GetNAVRHistory(fundCode, limit)
+}
+
+// Margin Trade Summary delegation
+func (uc *UnifiedClient) MarginTradeSummary(limit int) ([]*scraper.SinaMarginData, error) {
+	uc.initScrapers()
+	return uc.sinaClient.GetMarginTrade(limit)
+}
+
+// Table Parser from URL delegation
+func (uc *UnifiedClient) TableParserURL(url string) ([]scraper.Table, error) {
+	uc.initScrapers()
+	return uc.tableParser.ParseFromURL(url)
+}
+
+// Table Parser from HTML delegation
+func (uc *UnifiedClient) TableParserHTML(html string) ([]scraper.Table, error) {
+	uc.initScrapers()
+	return uc.tableParser.ParseFromString(html)
+}
+
+// Table Parser Find Keyword delegation
+func (uc *UnifiedClient) TableParserFindKeyword(tables []scraper.Table, keyword string) (*scraper.Table, error) {
+	uc.initScrapers()
+	return uc.tableParser.FindTableByKeyword(tables, keyword)
+}
+
+// Backtest Available Strategies delegation
+func (uc *UnifiedClient) BacktestAvailableStrategies() []string {
+	uc.initBacktest()
+	return backtest.AvailableStrategies()
+}
+
+// Backtest Run delegation
+func (uc *UnifiedClient) BacktestRun(strategy backtest.Strategy, bars []indicator.Bar) *backtest.Result {
+	uc.initBacktest()
+	return uc.backtestEngine.Run(strategy, bars)
+}
+
+// Backtest Combo delegation
+func (uc *UnifiedClient) BacktestCombo(strategies []backtest.Strategy, bars []indicator.Bar, mode backtest.ComboMode) *backtest.ComboResult {
+	uc.initBacktest()
+	return backtest.RunCombo(uc.backtestEngine, strategies, bars, mode)
+}
+
+// Factor Get Info delegation
+func (uc *UnifiedClient) FactorGetInfo(name string) *factor.FactorMeta {
+	return factor.Get(name)
+}
+
+// Factor Analysis Report delegation
+func (uc *UnifiedClient) FactorAnalysisReport(factorName string, codes []string, period, nQuantiles int) (*factor.FactorReport, error) {
+	return nil, fmt.Errorf("factor analysis not yet implemented - requires factor values and returns computation")
+}
+
+// Factor Forward Returns delegation
+func (uc *UnifiedClient) FactorForwardReturns(factorName string, codes []string, period, market, count int) (map[string][]float64, error) {
+	return nil, fmt.Errorf("factor forward returns not yet implemented - requires factor values computation")
+}
+
+// Chanlun Merge Klines delegation
+func (uc *UnifiedClient) ChanlunMergeKlines(code string, market, count int) ([]chanlun.Kline, error) {
+	return nil, fmt.Errorf("chanlun merge klines requires kline data - use TCP client or collector with KlineQuery")
+}
+
+// Chanlun Find FenXing delegation
+func (uc *UnifiedClient) ChanlunFindFenXing(code string, market, count int) ([]chanlun.FenXing, error) {
+	return nil, fmt.Errorf("chanlun find fenxing requires kline data - use TCP client or collector with KlineQuery")
+}
+
+// Chanlun Build Bi delegation
+func (uc *UnifiedClient) ChanlunBuildBi(code string, market, count int) ([]chanlun.Bi, error) {
+	return nil, fmt.Errorf("chanlun build bi requires kline data - use TCP client or collector with KlineQuery")
+}
+
+// Chanlun Build ZhongShu delegation
+func (uc *UnifiedClient) ChanlunBuildZhongShu(code string, market, count int) ([]chanlun.ZhongShu, error) {
+	return nil, fmt.Errorf("chanlun build zhongshu requires kline data - use TCP client or collector with KlineQuery")
+}
+
+// Chanlun Find MaiMaiDian delegation
+func (uc *UnifiedClient) ChanlunFindMaiMaiDian(code string, market, count int) ([]chanlun.MaiMaiDian, error) {
+	return nil, fmt.Errorf("chanlun find maimaidian requires kline data - use TCP client or collector with KlineQuery")
 }

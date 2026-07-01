@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 
@@ -37,16 +38,27 @@ func loadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-func isWebMode() bool {
+type runMode int
+
+const (
+	modeStdio          runMode = iota
+	modeSSE
+	modeStreamableHTTP
+	modeCombined
+)
+
+func detectMode() runMode {
 	for _, arg := range os.Args[1:] {
-		if arg == "--web" || arg == "--serve" {
-			return true
-		}
-		if strings.HasPrefix(arg, "--port=") {
-			return true
+		switch arg {
+		case "--sse":
+			return modeSSE
+		case "--streamable-http":
+			return modeStreamableHTTP
+		case "--web", "--serve":
+			return modeCombined
 		}
 	}
-	return false
+	return modeStdio
 }
 
 func webPortFromArgs() int {
@@ -91,15 +103,19 @@ func main() {
 
 	client := tdx.NewUnifiedClient(cfg.Token, cfg.Timeout, cfg.TDxHost, cfg.TDxPort)
 
-	if isWebMode() {
-		runWeb(client, cfg)
-		return
+	switch detectMode() {
+	case modeSSE:
+		runSSE(client, cfg)
+	case modeStreamableHTTP:
+		runStreamableHTTP(client, cfg)
+	case modeCombined:
+		runCombined(client, cfg)
+	default:
+		runMCP(client)
 	}
-
-	runMCP(client)
 }
 
-func runMCP(client *tdx.UnifiedClient) {
+func buildMCPServer(client *tdx.UnifiedClient) *server.MCPServer {
 	mcpServer := server.NewMCPServer(
 		"TDX Finance MCP",
 		"1.0.0",
@@ -144,9 +160,16 @@ func runMCP(client *tdx.UnifiedClient) {
 	}
 
 	mcpServer.AddPrompts(tdx.AllServerPrompts()...)
+	return mcpServer
+}
 
-	totalTools := len(tdx.AllTools()) + len(tdx.GetAllExpandedTools()) + len(tdx.GetAllV3Tools()) + len(tdx.GetAllNewTools())
-	fmt.Fprintf(os.Stderr, "TDX Finance MCP v1.0.0 已启动: %d 工具 + 45 投资技能\n", totalTools)
+func toolCount() int {
+	return len(tdx.AllTools()) + len(tdx.GetAllExpandedTools()) + len(tdx.GetAllV3Tools()) + len(tdx.GetAllNewTools())
+}
+
+func runMCP(client *tdx.UnifiedClient) {
+	mcpServer := buildMCPServer(client)
+	fmt.Fprintf(os.Stderr, "TDX Finance MCP v1.0.0 (stdio): %d 工具 + 45 投资技能\n", toolCount())
 
 	if err := server.ServeStdio(mcpServer); err != nil {
 		fmt.Fprintf(os.Stderr, "MCP 服务错误: %v\n", err)
@@ -154,14 +177,68 @@ func runMCP(client *tdx.UnifiedClient) {
 	}
 }
 
-func runWeb(client *tdx.UnifiedClient, cfg *Config) {
+func runSSE(client *tdx.UnifiedClient, cfg *Config) {
+	mcpServer := buildMCPServer(client)
 	addr := fmt.Sprintf("0.0.0.0:%d", cfg.WebPort)
-	webServer := web.NewServer(client, addr)
-	fmt.Fprintf(os.Stderr, "TDX Finance Web API v1.0.0 已启动: http://%s\n", addr)
-	fmt.Fprintf(os.Stderr, "  API 文档: http://localhost:%d/\n", cfg.WebPort)
-	fmt.Fprintf(os.Stderr, "  健康检查: http://localhost:%d/api/v1/health\n", cfg.WebPort)
-	if err := webServer.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "Web 服务错误: %v\n", err)
+
+	sseServer := server.NewSSEServer(mcpServer,
+		server.WithSSEEndpoint("/sse"),
+		server.WithMessageEndpoint("/message"),
+	)
+
+	fmt.Fprintf(os.Stderr, "TDX Finance MCP v1.0.0 (SSE): %d 工具 + 45 投资技能\n", toolCount())
+	fmt.Fprintf(os.Stderr, "  SSE 端点: http://0.0.0.0:%d/sse\n", cfg.WebPort)
+	fmt.Fprintf(os.Stderr, "  消息端点: http://0.0.0.0:%d/message\n", cfg.WebPort)
+	fmt.Fprintf(os.Stderr, "  使用 --port=%d 可更改端口\n", cfg.WebPort)
+
+	if err := sseServer.Start(addr); err != nil {
+		fmt.Fprintf(os.Stderr, "SSE 服务错误: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runStreamableHTTP(client *tdx.UnifiedClient, cfg *Config) {
+	mcpServer := buildMCPServer(client)
+	addr := fmt.Sprintf("0.0.0.0:%d", cfg.WebPort)
+
+	httpServer := server.NewStreamableHTTPServer(mcpServer,
+		server.WithEndpointPath("/mcp"),
+	)
+
+	fmt.Fprintf(os.Stderr, "TDX Finance MCP v1.0.0 (Streamable HTTP): %d 工具 + 45 投资技能\n", toolCount())
+	fmt.Fprintf(os.Stderr, "  端点: http://0.0.0.0:%d/mcp\n", cfg.WebPort)
+	fmt.Fprintf(os.Stderr, "  使用 --port=%d 可更改端口\n", cfg.WebPort)
+
+	if err := httpServer.Start(addr); err != nil {
+		fmt.Fprintf(os.Stderr, "Streamable HTTP 服务错误: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runCombined(client *tdx.UnifiedClient, cfg *Config) {
+	mcpServer := buildMCPServer(client)
+	httpMCP := server.NewStreamableHTTPServer(mcpServer,
+		server.WithEndpointPath("/mcp"),
+	)
+
+	webServer := web.NewServer(client, fmt.Sprintf("0.0.0.0:%d", cfg.WebPort))
+
+	rootMux := http.NewServeMux()
+	rootMux.Handle("/mcp", httpMCP)
+	rootMux.Handle("/", webServer.Handler())
+
+	addr := fmt.Sprintf("0.0.0.0:%d", cfg.WebPort)
+	fmt.Fprintf(os.Stderr, "TDX Finance Combined v1.0.0: %d 工具 + 45 投资技能\n", toolCount())
+	fmt.Fprintf(os.Stderr, "  MCP Streamable HTTP: http://0.0.0.0:%d/mcp\n", cfg.WebPort)
+	fmt.Fprintf(os.Stderr, "  REST API 文档:      http://0.0.0.0:%d/\n", cfg.WebPort)
+	fmt.Fprintf(os.Stderr, "  健康检查:           http://0.0.0.0:%d/api/v1/health\n", cfg.WebPort)
+
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: rootMux,
+	}
+	if err := srv.ListenAndServe(); err != nil {
+		fmt.Fprintf(os.Stderr, "Combined 服务错误: %v\n", err)
 		os.Exit(1)
 	}
 }
