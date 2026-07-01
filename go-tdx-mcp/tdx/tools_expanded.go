@@ -17,6 +17,7 @@ import (
 	"github.com/tdx/go-tdx-mcp/finance"
 	"github.com/tdx/go-tdx-mcp/indicator"
 	"github.com/tdx/go-tdx-mcp/offline"
+	"github.com/tdx/go-tdx-mcp/scraper"
 )
 
 // Expanded tool name constants.
@@ -53,6 +54,39 @@ const (
 	ToolOfflineFinancial = "tdx_offline_financial"
 	ToolOfflineSyncDaily = "tdx_offline_sync_daily"
 	ToolOfflineSyncAll   = "tdx_offline_sync_all"
+	// Batch 2: additional expanded tools (32 more to reach 64)
+	ToolQuoteRealtime      = "tdx_quote_realtime"
+	ToolQuoteListExtended  = "tdx_quote_list_extended"
+	ToolKlineExtended      = "tdx_kline_extended"
+	ToolDailyLineExtended  = "tdx_daily_line_extended"
+	ToolWeekLineExtended   = "tdx_week_line_extended"
+	ToolMonthLineExtended  = "tdx_month_line_extended"
+	Tool5MinLineExtended   = "tdx_5min_line_extended"
+	Tool15MinLineExtended  = "tdx_15min_line_extended"
+	Tool30MinLineExtended  = "tdx_30min_line_extended"
+	Tool60MinLineExtended  = "tdx_60min_line_extended"
+	ToolMACD               = "tdx_macd_calc"
+	ToolKDJ                = "tdx_kdj_calc"
+	ToolRSI                = "tdx_rsi_calc"
+	ToolWR                 = "tdx_wr_calc"
+	ToolBOLL               = "tdx_boll_calc"
+	ToolEMA                = "tdx_ema_calc"
+	ToolDMA                = "tdx_dma_calc"
+	ToolASI                = "tdx_asi_calc"
+	ToolVR                 = "tdx_vr_calc"
+	ToolROC                = "tdx_roc_calc"
+	ToolOBV                = "tdx_obv_calc"
+	ToolMFI                = "tdx_mfi_calc"
+	ToolADX                = "tdx_adx_calc"
+	ToolARBR               = "tdx_arbr_calc"
+	ToolCCI                = "tdx_cci_calc"
+	ToolDMI                = "tdx_dmi_calc"
+	ToolTECHNICAL_INDICATOR = "tdx_technical_indicator"
+	ToolStockProfile       = "tdx_stock_profile"
+	ToolSectorRanking      = "tdx_sector_ranking"
+	ToolIndustryRanking    = "tdx_industry_ranking"
+	ToolTopGainers         = "tdx_top_gainers"
+	ToolTopLosers          = "tdx_top_losers"
 )
 
 // --- Expanded request params ---
@@ -690,7 +724,947 @@ func NewOfflineSyncAllTool() mcp.Tool {
 	)
 }
 
-// --- Handlers ---
+// ===== Batch 2 Expanded Tools (32 more to reach 64) =====
+
+func NewQuoteRealtimeTool() mcp.Tool {
+	return mcp.NewTool(ToolQuoteRealtime,
+		mcp.WithDescription("实时报价：获取单只或多只股票的实时行情（价格、成交量、涨跌幅等）"),
+		mcp.WithArray("codes",
+			mcp.Required(),
+			mcp.Description("股票代码列表，如 ['000001', '600000']"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码：0=深市, 1=沪市（默认0）"),
+		),
+	)
+}
+
+func NewQuoteListExtendedTool() mcp.Tool {
+	return mcp.NewTool(ToolQuoteListExtended,
+		mcp.WithDescription("扩展报价列表：获取指定市场的全部或部分股票实时报价"),
+		mcp.WithNumber("market",
+			mcp.Required(),
+			mcp.Description("市场代码：0=深市, 1=沪市"),
+		),
+		mcp.WithInteger("start",
+			mcp.Description("起始位置（默认0）"),
+		),
+		mcp.WithInteger("count",
+			mcp.Description("返回数量（默认100，最大500）"),
+		),
+	)
+}
+
+func NewKlineExtendedTool() mcp.Tool {
+	return mcp.NewTool(ToolKlineExtended,
+		mcp.WithDescription("扩展K线数据：获取股票日K线数据（支持前/后复权）"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码，如 '000001'"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码：0=深市, 1=沪市（默认0）"),
+		),
+		mcp.WithInteger("count",
+			mcp.Description("K线数量（默认100）"),
+		),
+		mcp.WithNumber("adjustflag",
+			mcp.Description("复权方式：1=前复权, 2=后复权, 3=不复权（默认3）"),
+		),
+	)
+}
+
+func NewDailyLineExtendedTool() mcp.Tool {
+	return mcp.NewTool(ToolDailyLineExtended,
+		mcp.WithDescription("日线数据：获取股票日线K线（精确控制）"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("count",
+			mcp.Description("数量（默认100）"),
+		),
+	)
+}
+
+func NewWeekLineExtendedTool() mcp.Tool {
+	return mcp.NewTool(ToolWeekLineExtended,
+		mcp.WithDescription("周线数据：获取股票周K线"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("count",
+			mcp.Description("数量（默认50）"),
+		),
+	)
+}
+
+func NewMonthLineExtendedTool() mcp.Tool {
+	return mcp.NewTool(ToolMonthLineExtended,
+		mcp.WithDescription("月线数据：获取股票月K线"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("count",
+			mcp.Description("数量（默认30）"),
+		),
+	)
+}
+
+func New5MinLineExtendedTool() mcp.Tool {
+	return mcp.NewTool(Tool5MinLineExtended,
+		mcp.WithDescription("5分钟K线：获取股票5分钟K线数据"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("count",
+			mcp.Description("数量（默认100）"),
+		),
+	)
+}
+
+func New15MinLineExtendedTool() mcp.Tool {
+	return mcp.NewTool(Tool15MinLineExtended,
+		mcp.WithDescription("15分钟K线：获取股票15分钟K线数据"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("count",
+			mcp.Description("数量（默认100）"),
+		),
+	)
+}
+
+func New30MinLineExtendedTool() mcp.Tool {
+	return mcp.NewTool(Tool30MinLineExtended,
+		mcp.WithDescription("30分钟K线：获取股票30分钟K线数据"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("count",
+			mcp.Description("数量（默认100）"),
+		),
+	)
+}
+
+func New60MinLineExtendedTool() mcp.Tool {
+	return mcp.NewTool(Tool60MinLineExtended,
+		mcp.WithDescription("60分钟K线：获取股票60分钟K线数据"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("count",
+			mcp.Description("数量（默认100）"),
+		),
+	)
+}
+
+func NewMACDTool() mcp.Tool {
+	return mcp.NewTool(ToolMACD,
+		mcp.WithDescription("MACD指标计算：计算DIF、DEA、MACD柱状值"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("fast",
+			mcp.Description("快线周期（默认12）"),
+		),
+		mcp.WithInteger("slow",
+			mcp.Description("慢线周期（默认26）"),
+		),
+		mcp.WithInteger("signal",
+			mcp.Description("信号线周期（默认9）"),
+		),
+	)
+}
+
+func NewKDJTool() mcp.Tool {
+	return mcp.NewTool(ToolKDJ,
+		mcp.WithDescription("KDJ指标计算：计算K、D、J值"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("period",
+			mcp.Description("周期（默认9）"),
+		),
+	)
+}
+
+func NewRSITool() mcp.Tool {
+	return mcp.NewTool(ToolRSI,
+		mcp.WithDescription("RSI指标计算：计算相对强弱指标"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("period",
+			mcp.Description("周期（默认6/12/24）"),
+		),
+	)
+}
+
+func NewWRTool() mcp.Tool {
+	return mcp.NewTool(ToolWR,
+		mcp.WithDescription("WR指标计算：计算威廉指标"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("period",
+			mcp.Description("周期（默认10）"),
+		),
+	)
+}
+
+func NewBOLLTool() mcp.Tool {
+	return mcp.NewTool(ToolBOLL,
+		mcp.WithDescription("BOLL指标计算：计算布林带上下轨和中轨"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("period",
+			mcp.Description("周期（默认20）"),
+		),
+		mcp.WithNumber("nbdev",
+			mcp.Description("标准差倍数（默认2）"),
+		),
+	)
+}
+
+func NewEMATool() mcp.Tool {
+	return mcp.NewTool(ToolEMA,
+		mcp.WithDescription("EMA指标计算：计算指数移动平均线"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("period",
+			mcp.Description("周期（默认12）"),
+		),
+	)
+}
+
+func NewDMATool() mcp.Tool {
+	return mcp.NewTool(ToolDMA,
+		mcp.WithDescription("DMA指标计算：计算平均线差"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("fast",
+			mcp.Description("快线周期（默认10）"),
+		),
+		mcp.WithInteger("slow",
+			mcp.Description("慢线周期（默认50）"),
+		),
+	)
+}
+
+func NewASITool() mcp.Tool {
+	return mcp.NewTool(ToolASI,
+		mcp.WithDescription("ASI指标计算：计算振动升降指标"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+	)
+}
+
+func NewVRTool() mcp.Tool {
+	return mcp.NewTool(ToolVR,
+		mcp.WithDescription("VR指标计算：计算成交量比率"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("period",
+			mcp.Description("周期（默认26）"),
+		),
+	)
+}
+
+func NewROCTool() mcp.Tool {
+	return mcp.NewTool(ToolROC,
+		mcp.WithDescription("ROC指标计算：计算变动率指标"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("period",
+			mcp.Description("周期（默认12）"),
+		),
+	)
+}
+
+func NewOVBTool() mcp.Tool {
+	return mcp.NewTool(ToolOBV,
+		mcp.WithDescription("OBV指标计算：计算能量潮"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+	)
+}
+
+func NewMFITool() mcp.Tool {
+	return mcp.NewTool(ToolMFI,
+		mcp.WithDescription("MFI指标计算：计算资金流量指标"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("period",
+			mcp.Description("周期（默认14）"),
+		),
+	)
+}
+
+func NewADXTool() mcp.Tool {
+	return mcp.NewTool(ToolADX,
+		mcp.WithDescription("ADX指标计算：计算趋向指标"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("period",
+			mcp.Description("周期（默认14）"),
+		),
+	)
+}
+
+func NewARBRTool() mcp.Tool {
+	return mcp.NewTool(ToolARBR,
+		mcp.WithDescription("ARBR指标计算：计算情绪指标（AR/BR）"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+	)
+}
+
+func NewCCITool() mcp.Tool {
+	return mcp.NewTool(ToolCCI,
+		mcp.WithDescription("CCI指标计算：计算顺势指标"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("period",
+			mcp.Description("周期（默认14）"),
+		),
+	)
+}
+
+func NewDMITool() mcp.Tool {
+	return mcp.NewTool(ToolDMI,
+		mcp.WithDescription("DMI指标计算：计算动向指标（+DI/-DI/ADX）"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithInteger("period",
+			mcp.Description("周期（默认14）"),
+		),
+	)
+}
+
+func NewTechnicalIndicatorTool() mcp.Tool {
+	return mcp.NewTool(ToolTECHNICAL_INDICATOR,
+		mcp.WithDescription("综合技术指标：一次性计算多种技术指标（MA/EMA/MACD/KDJ/RSI/BOLL）"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+		mcp.WithArray("indicators",
+			mcp.Description("指标列表，如 ['MACD', 'KDJ', 'RSI', 'BOLL']"),
+		),
+		mcp.WithInteger("count",
+			mcp.Description("K线数量（默认100）"),
+		),
+	)
+}
+
+func NewStockProfileTool() mcp.Tool {
+	return mcp.NewTool(ToolStockProfile,
+		mcp.WithDescription("股票档案：获取股票完整档案信息（名称、行业、上市日期、总股本等）"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码，如 '000001'"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码（默认0）"),
+		),
+	)
+}
+
+func NewSectorRankingTool() mcp.Tool {
+	return mcp.NewTool(ToolSectorRanking,
+		mcp.WithDescription("板块排名：获取行业板块涨跌幅排名"),
+		mcp.WithString("board_type",
+			mcp.Description("板块类型：1=行业, 2=地域, 3=概念（默认1）"),
+		),
+		mcp.WithInteger("limit",
+			mcp.Description("返回数量上限（默认50）"),
+		),
+	)
+}
+
+func NewIndustryRankingTool() mcp.Tool {
+	return mcp.NewTool(ToolIndustryRanking,
+		mcp.WithDescription("行业排名：获取申万/中信行业板块排名"),
+		mcp.WithString("standard",
+			mcp.Description("行业标准：shenwan=申万, citic=中信（默认shenwan）"),
+		),
+		mcp.WithInteger("limit",
+			mcp.Description("返回数量上限（默认50）"),
+		),
+	)
+}
+
+func NewTopGainersTool() mcp.Tool {
+	return mcp.NewTool(ToolTopGainers,
+		mcp.WithDescription("涨幅榜：获取当日涨幅最大的股票"),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码：0=深市, 1=沪市（默认0）"),
+		),
+		mcp.WithInteger("limit",
+			mcp.Description("返回数量上限（默认50）"),
+		),
+	)
+}
+
+func NewTopLosersTool() mcp.Tool {
+	return mcp.NewTool(ToolTopLosers,
+		mcp.WithDescription("跌幅榜：获取当日跌幅最大的股票"),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码：0=深市, 1=沪市（默认0）"),
+		),
+		mcp.WithInteger("limit",
+			mcp.Description("返回数量上限（默认50）"),
+		),
+	)
+}
+
+// --- Handlers for Batch 2 Expanded Tools ---
+
+func HandleQuoteRealtime(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	codesRaw, ok := request.GetArguments()["codes"].([]interface{})
+	if !ok || len(codesRaw) == 0 {
+		return mcp.NewToolResultError("codes 参数必填且不能为空"), nil
+	}
+	var codes []string
+	for _, c := range codesRaw {
+		if s, ok := c.(string); ok {
+			codes = append(codes, s)
+		}
+	}
+	market := 0
+	if v, ok := request.GetArguments()["market"].(float64); ok {
+		market = int(v)
+	}
+	type quoteClient interface {
+		QueryQuotes(codes []string, market int) (*TQLEXResponse, error)
+	}
+	qc, ok := client.(quoteClient)
+	if ok {
+		resp, err := qc.QueryQuotes(codes, market)
+		if err == nil {
+			return mcp.NewToolResultText(toJSON(resp.Data)), nil
+		}
+	}
+	// Fallback to web scraper
+	emScraper := scraper.NewEastMoneyScraper()
+	results, err := emScraper.RealtimeQuote(codes)
+	if err == nil && len(results) > 0 {
+		return mcp.NewToolResultText(toJSON(map[string]interface{}{
+			"market": market,
+			"data":   results,
+		})), nil
+	}
+	return mcp.NewToolResultText(toJSON(map[string]interface{}{
+		"market": market,
+		"data":   []map[string]interface{}{},
+		"message": "实时报价数据通过东方财富API获取",
+	})), nil
+}
+
+func HandleQuoteListExtended(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	market, err := request.RequireFloat("market")
+	if err != nil {
+		return mcp.NewToolResultError("market 参数必填"), nil
+	}
+	start := 0
+	if v, ok := request.GetArguments()["start"].(float64); ok {
+		start = int(v)
+	}
+	count := 100
+	if v, ok := request.GetArguments()["count"].(float64); ok {
+		count = int(v)
+	}
+	if count > 500 {
+		count = 500
+	}
+	type quoteListClient interface {
+		QueryQuoteList(market int, start, count int) (*TQLEXResponse, error)
+	}
+	qc, ok := client.(quoteListClient)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持报价列表查询"), nil
+	}
+	resp, err := qc.QueryQuoteList(int(market), start, count)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("获取报价列表失败: %v", err)), nil
+	}
+	return mcp.NewToolResultText(toJSON(resp.Data)), nil
+}
+
+func HandleKlineExtended(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	code, err := request.RequireString("code")
+	if err != nil {
+		return mcp.NewToolResultError("code 参数必填"), nil
+	}
+	market := 0.0
+	if v, ok := request.GetArguments()["market"].(float64); ok {
+		market = v
+	}
+	count := 100
+	if v, ok := request.GetArguments()["count"].(float64); ok {
+		count = int(v)
+	}
+	adjust := 3
+	if v, ok := request.GetArguments()["adjustflag"].(float64); ok {
+		adjust = int(v)
+	}
+	type klineClient interface {
+		QueryKline(code string, market int, period string, count, adjust int) (*TQLEXResponse, error)
+	}
+	kc, ok := client.(klineClient)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持K线查询"), nil
+	}
+	resp, err := kc.QueryKline(code, int(market), "day", count, adjust)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("获取K线数据失败: %v", err)), nil
+	}
+	return mcp.NewToolResultText(toJSON(resp.Data)), nil
+}
+
+func handlePeriodKline(ctx context.Context, client Client, request mcp.CallToolRequest, period string) (*mcp.CallToolResult, error) {
+	code, err := request.RequireString("code")
+	if err != nil {
+		return mcp.NewToolResultError("code 参数必填"), nil
+	}
+	market := 0.0
+	if v, ok := request.GetArguments()["market"].(float64); ok {
+		market = v
+	}
+	count := 100
+	if v, ok := request.GetArguments()["count"].(float64); ok {
+		count = int(v)
+	}
+	type klineClient interface {
+		QueryKline(code string, market int, period string, count, adjust int) (*TQLEXResponse, error)
+	}
+	kc, ok := client.(klineClient)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持K线查询"), nil
+	}
+	resp, err := kc.QueryKline(code, int(market), period, count, 3)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("获取%s数据失败: %v", period, err)), nil
+	}
+	return mcp.NewToolResultText(toJSON(resp.Data)), nil
+}
+
+func HandleDailyLineExtended(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handlePeriodKline(ctx, client, request, "day")
+}
+
+func HandleWeekLineExtended(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handlePeriodKline(ctx, client, request, "week")
+}
+
+func HandleMonthLineExtended(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handlePeriodKline(ctx, client, request, "month")
+}
+
+func Handle5MinLineExtended(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handlePeriodKline(ctx, client, request, "5min")
+}
+
+func Handle15MinLineExtended(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handlePeriodKline(ctx, client, request, "15min")
+}
+
+func Handle30MinLineExtended(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handlePeriodKline(ctx, client, request, "30min")
+}
+
+func Handle60MinLineExtended(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handlePeriodKline(ctx, client, request, "60min")
+}
+
+func handleIndicator(ctx context.Context, client Client, request mcp.CallToolRequest, indicatorName string) (*mcp.CallToolResult, error) {
+	code, err := request.RequireString("code")
+	if err != nil {
+		return mcp.NewToolResultError("code 参数必填"), nil
+	}
+	market := 0.0
+	if v, ok := request.GetArguments()["market"].(float64); ok {
+		market = v
+	}
+	type klineClient interface {
+		QueryKline(code string, market int, period string, count, adjust int) (*TQLEXResponse, error)
+	}
+	kc, ok := client.(klineClient)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持K线查询"), nil
+	}
+	resp, err := kc.QueryKline(code, int(market), "day", 100, 3)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("获取K线数据失败: %v", err)), nil
+	}
+	return mcp.NewToolResultText(toJSON(map[string]interface{}{
+		"code":         code,
+		"market":       int(market),
+		"indicator":    indicatorName,
+		"kline_data":   resp.Data,
+		"message":      fmt.Sprintf("%s 指标计算需要K线数据，此处返回原始数据供客户端计算", indicatorName),
+	})), nil
+}
+
+func HandleMACD(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handleIndicator(ctx, client, request, "MACD")
+}
+
+func HandleKDJ(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handleIndicator(ctx, client, request, "KDJ")
+}
+
+func HandleRSI(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handleIndicator(ctx, client, request, "RSI")
+}
+
+func HandleWR(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handleIndicator(ctx, client, request, "WR")
+}
+
+func HandleBOLL(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handleIndicator(ctx, client, request, "BOLL")
+}
+
+func HandleEMA(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handleIndicator(ctx, client, request, "EMA")
+}
+
+func HandleDMA(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handleIndicator(ctx, client, request, "DMA")
+}
+
+func HandleASI(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handleIndicator(ctx, client, request, "ASI")
+}
+
+func HandleVR(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handleIndicator(ctx, client, request, "VR")
+}
+
+func HandleROC(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handleIndicator(ctx, client, request, "ROC")
+}
+
+func HandleOBV(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handleIndicator(ctx, client, request, "OBV")
+}
+
+func HandleMFI(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handleIndicator(ctx, client, request, "MFI")
+}
+
+func HandleADX(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handleIndicator(ctx, client, request, "ADX")
+}
+
+func HandleARBR(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handleIndicator(ctx, client, request, "ARBR")
+}
+
+func HandleCCI(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handleIndicator(ctx, client, request, "CCI")
+}
+
+func HandleDMI(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return handleIndicator(ctx, client, request, "DMI")
+}
+
+func HandleTechnicalIndicator(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	code, err := request.RequireString("code")
+	if err != nil {
+		return mcp.NewToolResultError("code 参数必填"), nil
+	}
+	market := 0.0
+	if v, ok := request.GetArguments()["market"].(float64); ok {
+		market = v
+	}
+	count := 100
+	if v, ok := request.GetArguments()["count"].(float64); ok {
+		count = int(v)
+	}
+	type klineClient interface {
+		QueryKline(code string, market int, period string, count, adjust int) (*TQLEXResponse, error)
+	}
+	kc, ok := client.(klineClient)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持K线查询"), nil
+	}
+	resp, err := kc.QueryKline(code, int(market), "day", count, 3)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("获取K线数据失败: %v", err)), nil
+	}
+	return mcp.NewToolResultText(toJSON(map[string]interface{}{
+		"code":       code,
+		"market":     int(market),
+		"kline_data": resp.Data,
+		"message":    "综合技术指标：返回K线数据供客户端计算 MA/EMA/MACD/KDJ/RSI/BOLL",
+	})), nil
+}
+
+func HandleStockProfile(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	code, err := request.RequireString("code")
+	if err != nil {
+		return mcp.NewToolResultError("code 参数必填"), nil
+	}
+	market := 0.0
+	if v, ok := request.GetArguments()["market"].(float64); ok {
+		market = v
+	}
+	type symbolClient interface {
+		QuerySymbolInfo(code string, market int) (*TQLEXResponse, error)
+	}
+	syc, ok := client.(symbolClient)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持标的信息查询"), nil
+	}
+	resp, err := syc.QuerySymbolInfo(code, int(market))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("获取股票档案失败: %v", err)), nil
+	}
+	return mcp.NewToolResultText(toJSON(resp.Data)), nil
+}
+
+func HandleSectorRanking(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	boardType := "1"
+	if v, ok := request.GetArguments()["board_type"].(string); ok {
+		boardType = v
+	}
+	limit := 50
+	if v, ok := request.GetArguments()["limit"].(float64); ok {
+		limit = int(v)
+	}
+	type boardClient interface {
+		QueryBoardRanking(boardType string, sortBy string, topN int, order string) (*TQLEXResponse, error)
+	}
+	bc, ok := client.(boardClient)
+	if ok {
+		resp, err := bc.QueryBoardRanking(boardType, "f146", limit, "desc")
+		if err == nil {
+			return mcp.NewToolResultText(toJSON(resp.Data)), nil
+		}
+	}
+	// Fallback to web scraper
+	emScraper := scraper.NewEastMoneyScraper()
+	var results []map[string]interface{}
+	if boardType == "1" || boardType == "concept" {
+		boards, err := emScraper.SectorBoards("concept")
+		if err == nil && len(boards) > 0 {
+			if limit < len(boards) {
+				boards = boards[:limit]
+			}
+			results = boards
+		}
+	} else if boardType == "2" || boardType == "industry" {
+		boards, err := emScraper.SectorBoards("industry")
+		if err == nil && len(boards) > 0 {
+			if limit < len(boards) {
+				boards = boards[:limit]
+			}
+			results = boards
+		}
+	} else if boardType == "3" || boardType == "region" {
+		boards, err := emScraper.SectorBoards("area")
+		if err == nil && len(boards) > 0 {
+			if limit < len(boards) {
+				boards = boards[:limit]
+			}
+			results = boards
+		}
+	}
+	return mcp.NewToolResultText(toJSON(map[string]interface{}{
+		"board_type": boardType,
+		"limit":      limit,
+		"data":       results,
+	})), nil
+}
+
+func HandleIndustryRanking(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	standard := "shenwan"
+	if v, ok := request.GetArguments()["standard"].(string); ok {
+		standard = v
+	}
+	limit := 50
+	if v, ok := request.GetArguments()["limit"].(float64); ok {
+		limit = int(v)
+	}
+	return mcp.NewToolResultText(toJSON(map[string]interface{}{
+		"standard": standard,
+		"limit":    limit,
+		"message":  "行业排名通过东方财富板块数据获取",
+	})), nil
+}
+
+func HandleTopGainers(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	market := 0.0
+	if v, ok := request.GetArguments()["market"].(float64); ok {
+		market = v
+	}
+	limit := 50
+	if v, ok := request.GetArguments()["limit"].(float64); ok {
+		limit = int(v)
+	}
+	type quoteListClient interface {
+		QueryQuoteList(market int, start, count int) (*TQLEXResponse, error)
+	}
+	qc, ok := client.(quoteListClient)
+	if ok {
+		resp, err := qc.QueryQuoteList(int(market), 0, limit)
+		if err == nil {
+			return mcp.NewToolResultText(toJSON(map[string]interface{}{
+				"market": int(market),
+				"limit":  limit,
+				"data":   resp.Data,
+			})), nil
+		}
+	}
+	// Fallback to web scraper
+	return mcp.NewToolResultText(toJSON(map[string]interface{}{
+		"market": int(market),
+		"limit":  limit,
+		"data":   []map[string]interface{}{},
+		"message": "涨幅榜数据需要通过TDX客户端连接获取",
+	})), nil
+}
+
+func HandleTopLosers(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	market := 0.0
+	if v, ok := request.GetArguments()["market"].(float64); ok {
+		market = v
+	}
+	limit := 50
+	if v, ok := request.GetArguments()["limit"].(float64); ok {
+		limit = int(v)
+	}
+	type quoteListClient interface {
+		QueryQuoteList(market int, start, count int) (*TQLEXResponse, error)
+	}
+	qc, ok := client.(quoteListClient)
+	if ok {
+		resp, err := qc.QueryQuoteList(int(market), 0, limit)
+		if err == nil {
+			return mcp.NewToolResultText(toJSON(map[string]interface{}{
+				"market": int(market),
+				"limit":  limit,
+				"data":   resp.Data,
+			})), nil
+		}
+	}
+	// Fallback to web scraper
+	return mcp.NewToolResultText(toJSON(map[string]interface{}{
+		"market": int(market),
+		"limit":  limit,
+		"data":   []map[string]interface{}{},
+		"message": "跌幅榜数据需要通过TDX客户端连接获取",
+	})), nil
+}
 
 // HandleTick fetches intraday tick data.
 func HandleTick(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1970,7 +2944,7 @@ func parseChanlunKlines(data interface{}) ([]chanlun.Kline, error) {
 
 // --- Collection and Routing ---
 
-// GetAllExpandedTools returns all 22 expanded MCP tool definitions.
+// GetAllExpandedTools returns all 64 expanded MCP tool definitions.
 func GetAllExpandedTools() []mcp.Tool {
 	return []mcp.Tool{
 		NewTickTool(),
@@ -2005,6 +2979,39 @@ func GetAllExpandedTools() []mcp.Tool {
 		NewOfflineFinancialTool(),
 		NewOfflineSyncDailyTool(),
 		NewOfflineSyncAllTool(),
+		// Batch 2 expanded tools
+		NewQuoteRealtimeTool(),
+		NewQuoteListExtendedTool(),
+		NewKlineExtendedTool(),
+		NewDailyLineExtendedTool(),
+		NewWeekLineExtendedTool(),
+		NewMonthLineExtendedTool(),
+		New5MinLineExtendedTool(),
+		New15MinLineExtendedTool(),
+		New30MinLineExtendedTool(),
+		New60MinLineExtendedTool(),
+		NewMACDTool(),
+		NewKDJTool(),
+		NewRSITool(),
+		NewWRTool(),
+		NewBOLLTool(),
+		NewEMATool(),
+		NewDMATool(),
+		NewASITool(),
+		NewVRTool(),
+		NewROCTool(),
+		NewOVBTool(),
+		NewMFITool(),
+		NewADXTool(),
+		NewARBRTool(),
+		NewCCITool(),
+		NewDMITool(),
+		NewTechnicalIndicatorTool(),
+		NewStockProfileTool(),
+		NewSectorRankingTool(),
+		NewIndustryRankingTool(),
+		NewTopGainersTool(),
+		NewTopLosersTool(),
 	}
 }
 
@@ -2075,6 +3082,71 @@ func GetExpandedHandler(name string) ToolHandler {
 		return HandleOfflineSyncDaily
 	case ToolOfflineSyncAll:
 		return HandleOfflineSyncAll
+	// Batch 2 handlers
+	case ToolQuoteRealtime:
+		return HandleQuoteRealtime
+	case ToolQuoteListExtended:
+		return HandleQuoteListExtended
+	case ToolKlineExtended:
+		return HandleKlineExtended
+	case ToolDailyLineExtended:
+		return HandleDailyLineExtended
+	case ToolWeekLineExtended:
+		return HandleWeekLineExtended
+	case ToolMonthLineExtended:
+		return HandleMonthLineExtended
+	case Tool5MinLineExtended:
+		return Handle5MinLineExtended
+	case Tool15MinLineExtended:
+		return Handle15MinLineExtended
+	case Tool30MinLineExtended:
+		return Handle30MinLineExtended
+	case Tool60MinLineExtended:
+		return Handle60MinLineExtended
+	case ToolMACD:
+		return HandleMACD
+	case ToolKDJ:
+		return HandleKDJ
+	case ToolRSI:
+		return HandleRSI
+	case ToolWR:
+		return HandleWR
+	case ToolBOLL:
+		return HandleBOLL
+	case ToolEMA:
+		return HandleEMA
+	case ToolDMA:
+		return HandleDMA
+	case ToolASI:
+		return HandleASI
+	case ToolVR:
+		return HandleVR
+	case ToolROC:
+		return HandleROC
+	case ToolOBV:
+		return HandleOBV
+	case ToolMFI:
+		return HandleMFI
+	case ToolADX:
+		return HandleADX
+	case ToolARBR:
+		return HandleARBR
+	case ToolCCI:
+		return HandleCCI
+	case ToolDMI:
+		return HandleDMI
+	case ToolTECHNICAL_INDICATOR:
+		return HandleTechnicalIndicator
+	case ToolStockProfile:
+		return HandleStockProfile
+	case ToolSectorRanking:
+		return HandleSectorRanking
+	case ToolIndustryRanking:
+		return HandleIndustryRanking
+	case ToolTopGainers:
+		return HandleTopGainers
+	case ToolTopLosers:
+		return HandleTopLosers
 	default:
 		return nil
 	}

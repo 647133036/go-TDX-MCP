@@ -431,37 +431,70 @@ func (e *EastMoneyScraper) LimitUpPool(date string) ([]map[string]interface{}, e
 	}
 
 	type ztItem struct {
-		C    int             `json:"c"`
-		M    int             `json:"m"`
-		N    string          `json:"n"`
-		P    json.RawMessage `json:"p"`
-		Zdp  float64         `json:"zdp"`
-		Amount float64       `json:"amount"`
-		Ltsz float64       `json:"ltsz"`
-		Tshare float64      `json:"tshare"`
-		Hs   float64       `json:"hs"`
-		Lbc  int           `json:"lbc"`
-		Fbt  int           `json:"fbt"`
-		Lbt  int           `json:"lbt"`
-		Fund float64       `json:"fund"`
-		Zbc  int           `json:"zbc"`
-		Hybk string        `json:"hybk"`
-		Zttj map[string]interface{} `json:"zttj"`
+		C          json.RawMessage `json:"c"`
+		M          int             `json:"m"`
+		N          string          `json:"n"`
+		P          json.RawMessage `json:"p"`
+		Zdp        float64         `json:"zdp"`
+		Amount     float64         `json:"amount"`
+		Ltsz       float64         `json:"ltsz"`
+		Tshare     float64         `json:"tshare"`
+		Hs         float64         `json:"hs"`
+		Lbc        int             `json:"lbc"`
+		Fbt        json.RawMessage `json:"fbt"`
+		Lbt        json.RawMessage `json:"lbt"`
+		Fund       float64         `json:"fund"`
+		Zbc        int             `json:"zbc"`
+		Hybk       string          `json:"hybk"`
+		Zttj       map[string]interface{} `json:"zttj"`
 	}
 
 	var parsed struct {
 		Data struct {
-			TC  int        `json:"tc"`
-			Qdate string   `json:"qdate"`
-			Pool []ztItem `json:"pool"`
+			TC   int             `json:"tc"`
+			Qdate json.RawMessage `json:"qdate"`
+			Pool []ztItem        `json:"pool"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return nil, err
 	}
 
+	qdateStr := ""
+	if len(parsed.Data.Qdate) > 0 {
+		// Try as string first
+		if parsed.Data.Qdate[0] == '"' {
+			var s string
+			if err := json.Unmarshal(parsed.Data.Qdate, &s); err == nil {
+				qdateStr = s
+			}
+		} else {
+			// Try as number
+			var n float64
+			if err := json.Unmarshal(parsed.Data.Qdate, &n); err == nil {
+				qdateStr = fmt.Sprintf("%.0f", n)
+			}
+		}
+	}
+
 	results := make([]map[string]interface{}, 0, len(parsed.Data.Pool))
 	for _, item := range parsed.Data.Pool {
+		// Parse C field - could be string or int
+		stockCode := "0"
+		if len(item.C) > 0 {
+			if item.C[0] == '"' {
+				var s string
+				if err := json.Unmarshal(item.C, &s); err == nil {
+					stockCode = s
+				}
+			} else {
+				var n float64
+				if err := json.Unmarshal(item.C, &n); err == nil {
+					stockCode = fmt.Sprintf("%.0f", n)
+				}
+			}
+		}
+		
 		price := 0.0
 		if item.P != nil {
 			var p float64
@@ -471,17 +504,23 @@ func (e *EastMoneyScraper) LimitUpPool(date string) ([]map[string]interface{}, e
 		}
 
 		firstZT := ""
-		if item.Fbt > 0 {
-			firstZT = fmt.Sprintf("%06d", item.Fbt)
+		if len(item.Fbt) > 0 {
+			var fbtVal float64
+			if json.Unmarshal(item.Fbt, &fbtVal) == nil {
+				firstZT = fmt.Sprintf("%.0f", fbtVal)
+			}
 		}
 		lastZT := ""
-		if item.Lbt > 0 {
-			lastZT = fmt.Sprintf("%06d", item.Lbt)
+		if len(item.Lbt) > 0 {
+			var lbtVal float64
+			if json.Unmarshal(item.Lbt, &lbtVal) == nil {
+				lastZT = fmt.Sprintf("%.0f", lbtVal)
+			}
 		}
 
 		results = append(results, map[string]interface{}{
-			"date":           parsed.Data.Qdate,
-			"stock_code":     fmt.Sprintf("%d", item.C),
+			"date":           qdateStr,
+			"stock_code":     stockCode,
 			"stock_name":     item.N,
 			"market":         item.M,
 			"price":          price,

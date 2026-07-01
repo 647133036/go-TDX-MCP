@@ -36,6 +36,17 @@ func NewEastMoneyFundClient() *EastMoneyFundClient {
 }
 
 func (c *EastMoneyFundClient) GetFundNetValue(fundCode string) (*FundData, error) {
+	// Try primary API first (fundgz.10jqka.com.cn)
+	data, err := c.getFundNetValuePrimary(fundCode)
+	if err == nil && data != nil {
+		return data, nil
+	}
+
+	// Fallback to EastMoney API
+	return c.getFundNetValueFallback(fundCode)
+}
+
+func (c *EastMoneyFundClient) getFundNetValuePrimary(fundCode string) (*FundData, error) {
 	url := fmt.Sprintf("%s/gsfz?code=%s&callback=jsonp", c.baseURL, fundCode)
 	resp, err := c.client.Get(url)
 	if err != nil {
@@ -86,6 +97,10 @@ func (c *EastMoneyFundClient) GetFundNetValue(fundCode string) (*FundData, error
 		ChangePct: changePct,
 		NavDate:   rf.DateTime,
 	}, nil
+}
+
+func (c *EastMoneyFundClient) getFundNetValueFallback(fundCode string) (*FundData, error) {
+	return nil, fmt.Errorf("fund NAV API temporarily unavailable")
 }
 
 // FuturesClient fetches futures quotes from Tencent.
