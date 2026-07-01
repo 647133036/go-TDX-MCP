@@ -1,70 +1,75 @@
 # TDX Finance MCP
 
-通达信金融数据 MCP 服务器，提供 A 股/港股/美股实时行情、K 线、技术指标、缠论分析、量化回测、基金持仓、加密货币等金融数据服务。
+通达信金融数据 MCP 服务器，提供 A 股/港股/美股/加密货币等多市场金融数据服务。
 
-支持两种运行模式：
+212 个工具，覆盖实时行情、K 线、技术指标、缠论分析、量化回测、资金流向、板块分析、基金数据、宏观数据等场景。
 
-- **MCP 模式**：标准 MCP 协议，通过 stdin/stdout 与 Claude Desktop、Cursor 等 AI 工具集成
-- **Web API 模式**：RESTful HTTP API + WebSocket 实时推送，可直接浏览器访问
+支持三种运行模式：
 
-## 特性
+- **MCP Stdio 模式**：标准 MCP 协议，通过 stdin/stdout 与 Claude Desktop、Cursor、Windsurf 等 AI 工具集成
+- **MCP Web 模式**：SSE / Streamable HTTP / 混合模式，通过 HTTP 提供 MCP 协议接口
+- **REST API 模式**：RESTful HTTP API + WebSocket 实时推送，可直接浏览器或任意 HTTP 客户端访问
 
-- **实时行情**：A 股/港股/美股/期货实时报价
-- **K 线数据**：日线/周线/月线/5/15/30/60 分钟线，支持前复权/后复权
-- **技术指标**：34 种指标（MACD/KDJ/RSI/BOLL/DMI/ATR/WR/CCI/OBV/VR 等），一键批量计算
-- **缠论分析**：自动识别笔、线段、中枢、买卖点
-- **量化回测**：内置 12 种策略（均线交叉、海龟、布林带等）
-- **财务数据**：利润表/资产负债表/现金流量表
-- **资金流向**：主力资金/北向资金/南向资金
-- **板块分析**：行业/概念/地域板块排行与成分股
-- **基金数据**：基金净值/持仓/搜索
-- **加密货币**：BTC/ETH 等主流币种行情
-- **WebSocket 推送**：实时行情每 3 秒推送
+## 工具总览
 
-## 安装
+| 类别 | 数量 | 说明 |
+|------|------|------|
+| Core | 6 | 基础行情：实时报价、K 线、股票信息、选股、指标选择、API 数据 |
+| Expanded | 64 | 扩展工具：行情、板块、资金流、缠论、回测、财务、公告、离线数据等 |
+| V3 | 8 | 高级工具：市场概览、板块资金流、涨跌停、财务指标、宏观数据、新闻舆情、表格爬虫 |
+| New | 134 | 新增工具：加密货币、基金净值、融资融券、龙虎榜、可转债、期货、因子计算、选股扫描、回测组合等 |
+
+## 快速开始
+
+### 安装
 
 ```bash
-# 克隆仓库
 git clone https://github.com/647133036/go-TDX-MCP.git
 cd go-TDX-MCP
-
-# 编译
 go build -o go-tdx-mcp .
-
-# 或下载预编译版本
-# https://github.com/647133036/go-TDX-MCP/releases
 ```
 
-## 运行
+### 配置
 
-### Web API 模式
+创建 `config.json`：
 
-```bash
-# 默认端口 8000
-./go-tdx-mcp --web
-
-# 自定义端口
-./go-tdx-mcp --web --port=9000
-
-# 使用配置文件
-./go-tdx-mcp config.json --web
-
-# 环境变量配置
-TDX_TOKEN=your_token ./go-tdx-mcp --web --port=8000
+```json
+{
+  "token": "your_tdx_token",
+  "timeout": 30,
+  "web_port": 8000,
+  "tdx_host": "",
+  "tdx_port": 0
+}
 ```
 
-启动后可通过浏览器访问：
-- API 文档首页：http://localhost:8000/
-- 健康检查：http://localhost:8000/api/v1/health
+或通过环境变量：
 
-### MCP 模式
+| 变量 | 说明 |
+|------|------|
+| `TDX_TOKEN` | 通达信 HTTP API Token |
+| `TDX_HOST` | 通达信服务器地址 |
+| `TDX_PORT` | 通达信服务器端口 |
+
+环境变量优先级高于配置文件。
+
+### 运行
 
 ```bash
-# 标准 MCP 模式（stdin/stdout）
+# MCP Stdio 模式（默认）
 ./go-tdx-mcp
+
+# MCP SSE 模式
+./go-tdx-mcp --sse --port=8000
+
+# MCP Streamable HTTP 模式
+./go-tdx-mcp --streamable-http --port=8000
+
+# 混合模式（MCP + REST API + WebSocket）
+./go-tdx-mcp --web --port=8000
 ```
 
-在 Claude Desktop 中配置：
+### 集成 Claude Desktop
 
 ```json
 {
@@ -77,29 +82,47 @@ TDX_TOKEN=your_token ./go-tdx-mcp --web --port=8000
 }
 ```
 
-## 配置
+## 运行模式详解
 
-创建 `config.json` 文件：
+### MCP Stdio 模式
 
-```json
-{
-  "token": "your_tdx_token",
-  "timeout": 30,
-  "web_port": 8000,
-  "tdx_host": "",
-  "tdx_port": 0
-}
+标准 MCP 协议，适合与 AI 编程工具集成。
+
+```bash
+./go-tdx-mcp
 ```
 
-环境变量优先级高于配置文件：
+支持的客户端：Claude Desktop、Cursor、Windsurf、VS Code MCP 插件等。
 
-| 变量 | 说明 |
-|------|------|
-| `TDX_TOKEN` | 通达信 HTTP API Token |
-| `TDX_HOST` | 通达信服务器地址 |
-| `TDX_PORT` | 通达信服务器端口 |
+### MCP Web 模式
 
-## API 端点
+通过 HTTP 提供 MCP 协议接口，适合远程调用。
+
+```bash
+# SSE 模式
+./go-tdx-mcp --sse --port=8000
+# SSE 端点: http://localhost:8000/sse
+# 消息端点: http://localhost:8000/message
+
+# Streamable HTTP 模式
+./go-tdx-mcp --streamable-http --port=8000
+# 端点: http://localhost:8000/mcp
+```
+
+### 混合模式
+
+同时提供 MCP Streamable HTTP、REST API 文档首页和 WebSocket 实时推送。
+
+```bash
+./go-tdx-mcp --web --port=8000
+```
+
+启动后可通过浏览器访问：
+- API 文档首页：http://localhost:8000/
+- MCP Streamable HTTP：http://localhost:8000/mcp
+- 健康检查：http://localhost:8000/api/v1/health
+
+## REST API 端点
 
 ### 行情数据
 
@@ -212,15 +235,18 @@ go-TDX-MCP/
 ├── tdx/
 │   ├── tcp_client.go          # TDX TCP 客户端
 │   ├── unified_client.go      # 统一客户端（TCP + HTTP）
-│   ├── tools_expanded.go      # 扩展工具集
-│   ├── tools_new.go           # 新增工具集
-│   └── v3_tools.go            # V3 工具集
+│   ├── tools_expanded.go      # 扩展工具集（64 个）
+│   ├── tools_new.go           # 新增工具集（134 个）
+│   ├── tools_v3.go            # V3 工具集（8 个）
+│   └── tools.go               # 核心工具集（6 个）
 ├── indicator/                 # 技术指标计算
 ├── backtest/                  # 量化回测引擎
 ├── chanlun/                   # 缠论分析引擎
 ├── finance/                   # 财务报表解析
 ├── offline/                   # 离线数据读写（TDX vipdoc）
 ├── scraper/                   # 网页数据爬虫
+├── portfolio/                 # 投资组合优化
+├── screen/                    # 选股扫描
 └── config.json                # 配置文件
 ```
 
@@ -229,30 +255,24 @@ go-TDX-MCP/
 - **TDX TCP**：通达信行情服务器（实时行情、K 线、财务等）
 - **东方财富 API**：push2his / push2delay / datacenter（K 线、财务、板块等）
 - **新浪财经**：行情数据补充
+- **腾讯证券**：融资融券数据
 - **本地 TDX 数据**：vipdoc 目录下的日线/分钟线/板块文件
+- **Binance API**：加密货币行情（免费）
+- **CoinGecko API**：加密货币数据备用源
 
 ## 技术栈
 
-- **语言**：Go 1.22+
-- **框架**：gorilla/mux（HTTP）、mark3labs/mcp-go（MCP 协议）
+- **语言**：Go 1.26+
+- **MCP**：mark3labs/mcp-go v0.55.0
+- **HTTP**：gorilla/mux + gorilla/websocket
 - **TDX 协议**：gotdx（通达信二进制协议）
-- **爬虫**：chromedp（Chrome 无头浏览器）、net/http
+- **爬虫**：chromedp（Chrome 无头浏览器）、net/http、goquery
 
-## 致谢
+## 测试
 
-感谢以下开源项目为本项目提供技术支持：
-
-- [gotdx](https://github.com/bensema/gotdx) — 通达信 TCP 协议 Go 实现
-- [mcp-go](https://github.com/mark3labs/mcp-go) — Model Context Protocol SDK
-- [gorilla/websocket](https://github.com/gorilla/websocket) — WebSocket 库
-- [chromedp](https://github.com/chromedp/chromedp) — Chrome 无头浏览器自动化
-- [goquery](https://github.com/PuerkitoBio/goquery) — jQuery 风格 HTML 解析
-
-数据来源：
-
-- 通达信行情服务器
-- 东方财富 push2 API
-- 新浪财经
+```bash
+go test ./...
+```
 
 ## 许可证
 
