@@ -17,6 +17,46 @@ import (
 	"github.com/tdx/go-tdx-mcp/scraper"
 )
 
+// normalizeBody converts a typed request body (struct) into map[string]interface{}.
+// This fixes the mismatch between handlers passing typed structs (QuoteRequest,
+// KlineRequest, etc.) and query* methods asserting map[string]interface{}.
+func normalizeBody(body interface{}) (map[string]interface{}, bool) {
+	if m, ok := body.(map[string]interface{}); ok {
+		return m, true
+	}
+	b, err := json.Marshal(body)
+	if err != nil {
+		return nil, false
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, false
+	}
+	return m, true
+}
+
+// toInt converts a numeric value read from a normalized body map to int.
+// After json.Marshal/Unmarshal round-trip, numeric fields become float64.
+func toInt(v interface{}) int {
+	switch t := v.(type) {
+	case int:
+		return t
+	case int64:
+		return int(t)
+	case float64:
+		return int(t)
+	case json.Number:
+		n, _ := t.Int64()
+		return int(n)
+	case string:
+		var n int
+		fmt.Sscanf(t, "%d", &n)
+		return n
+	default:
+		return 0
+	}
+}
+
 // UnifiedClient wraps both HTTP (TQLEX) and TCP clients with automatic fallback.
 type UnifiedClient struct {
 	httpClient        *HTTPClient
@@ -32,6 +72,8 @@ type UnifiedClient struct {
 	fundHoldingClient *scraper.FundHoldingClient
 	sinaClient        *scraper.SinaClient
 	tableParser       *scraper.TableParser
+	ocrClient         *scraper.OCRClient
+	webScraper        *scraper.Scraper
 	backtestEngine    *backtest.Engine
 	initOnce          sync.Once
 	initErr           error
@@ -210,14 +252,14 @@ func (uc *UnifiedClient) TQLEXQuery(ctx context.Context, entry string, body inte
 
 // queryQuotes handles PBHQInfo via TCP or MultiHostCollector.
 func (uc *UnifiedClient) queryQuotes(body interface{}) (*TQLEXResponse, error) {
-	data, ok := body.(map[string]interface{})
+	data, ok := normalizeBody(body)
 	if !ok {
 		return nil, fmt.Errorf("invalid quotes request body type")
 	}
 	code := fmt.Sprintf("%v", data["Code"])
 	market := 0
-	if m, ok := data["Setcode"].(int); ok {
-		market = m
+	if v := toInt(data["Setcode"]); v != 0 {
+		market = v
 	}
 
 	if uc.useCollector && uc.collector != nil {
@@ -241,33 +283,38 @@ func (uc *UnifiedClient) queryQuotes(body interface{}) (*TQLEXResponse, error) {
 
 // tryTCPQuotes attempts to get quotes via TCP, recovering from panics.
 func (uc *UnifiedClient) tryTCPQuotes(code string, market int) (*TQLEXResponse, error) {
-	defer func() { recover() }()
-	quote, err := uc.tcpClient.GetQuote(code, market)
-	if err != nil {
-		return nil, err
-	}
-	result, _ := json.Marshal(quote)
-	return &TQLEXResponse{Data: json.RawMessage(result)}, nil
+	var result *TQLEXResponse
+	err := uc.tcpClient.withRetry(func() error {
+		defer func() { recover() }()
+		quote, e := uc.tcpClient.GetQuote(code, market)
+		if e != nil {
+			return e
+		}
+		r, _ := json.Marshal(quote)
+		result = &TQLEXResponse{Data: json.RawMessage(r)}
+		return nil
+	})
+	return result, err
 }
 
 // queryKline handles PBFXT via TCP or MultiHostCollector.
 func (uc *UnifiedClient) queryKline(body interface{}) (*TQLEXResponse, error) {
-	data, ok := body.(map[string]interface{})
+	data, ok := normalizeBody(body)
 	if !ok {
 		return nil, fmt.Errorf("invalid kline request body type")
 	}
 	code := fmt.Sprintf("%v", data["Code"])
 	market := 0
-	if m, ok := data["Setcode"].(int); ok {
-		market = m
+	if v := toInt(data["Setcode"]); v != 0 {
+		market = v
 	}
 	period := PeriodCodeToString(data["Period"])
 	count := 100
-	if w, ok := data["WantNum"].(int); ok && w > 0 {
+	if w := toInt(data["WantNum"]); w > 0 {
 		count = w
 	}
 	fq := 0
-	if t, ok := data["TQFlag"].(int); ok {
+	if t := toInt(data["TQFlag"]); t != 0 {
 		if t&0x01 != 0 {
 			fq = 1
 		} else if t&0x02 != 0 {
@@ -299,40 +346,42 @@ func (uc *UnifiedClient) queryKline(body interface{}) (*TQLEXResponse, error) {
 
 // tryTCPKline attempts to get kline data via TCP, recovering from panics.
 func (uc *UnifiedClient) tryTCPKline(code string, market int, period string, count, fq int) (*TQLEXResponse, error) {
-	defer func() { recover() }()
-	bars, err := uc.tcpClient.GetKLineWithAdjust(code, market, period, count, fq)
-	if err != nil {
-		return nil, err
-	}
-	result, _ := json.Marshal(bars)
-	return &TQLEXResponse{Data: json.RawMessage(result)}, nil
+	var result *TQLEXResponse
+	err := uc.tcpClient.withRetry(func() error {
+		defer func() { recover() }()
+		bars, e := uc.tcpClient.GetKLineWithAdjust(code, market, period, count, fq)
+		if e != nil {
+			return e
+		}
+		r, _ := json.Marshal(bars)
+		result = &TQLEXResponse{Data: json.RawMessage(r)}
+		return nil
+	})
+	return result, err
 }
 
-// queryScreener handles wendaQuery via TCP.
-// Note: wendaQuery is NLP-based, no direct TCP equivalent. Falls back to HTTP.
+// queryScreener handles wendaQuery via TQLEX HTTP.
+// wendaQuery is NLP-based, no direct TCP equivalent exists — route to HTTP.
 func (uc *UnifiedClient) queryScreener(body interface{}) (*TQLEXResponse, error) {
-	// wendaQuery requires NLP engine — no TCP alternative exists
-	// Return empty result to indicate TCP-unavailable
-	return &TQLEXResponse{Data: map[string]interface{}{"data": []interface{}{}, "page": 1, "total": 0}}, nil
+	return uc.httpClient.TQLEXQuery(context.Background(), "JNLPSE:wendaQuery", body)
 }
 
-// queryIndicator handles InfoSelectV2 via TCP.
-// Note: InfoSelectV2 is NLP-based, no direct TCP equivalent. Falls back to HTTP.
+// queryIndicator handles InfoSelectV2 via TQLEX HTTP.
+// InfoSelectV2 is NLP-based, no direct TCP equivalent exists — route to HTTP.
 func (uc *UnifiedClient) queryIndicator(body interface{}) (*TQLEXResponse, error) {
-	// InfoSelectV2 requires NLP engine — no TCP alternative exists
-	return &TQLEXResponse{Data: map[string]interface{}{"data": []interface{}{}, "total": 0}}, nil
+	return uc.httpClient.TQLEXQuery(context.Background(), "NLPSE:InfoSelectV2", body)
 }
 
 // queryAuction handles PBAuction via TCP.
 func (uc *UnifiedClient) queryAuction(body interface{}) (*TQLEXResponse, error) {
-	data, ok := body.(map[string]interface{})
+	data, ok := normalizeBody(body)
 	if !ok {
 		return nil, fmt.Errorf("invalid auction request body type")
 	}
 	code := fmt.Sprintf("%v", data["Code"])
 	market := 0
-	if m, ok := data["Setcode"].(int); ok {
-		market = m
+	if v := toInt(data["Setcode"]); v != 0 {
+		market = v
 	}
 
 	// Try TCP first with panic recovery
@@ -348,25 +397,30 @@ func (uc *UnifiedClient) queryAuction(body interface{}) (*TQLEXResponse, error) 
 
 // tryTCPAuction attempts to get auction data via TCP, recovering from panics.
 func (uc *UnifiedClient) tryTCPAuction(code string, market int) (*TQLEXResponse, error) {
-	defer func() { recover() }()
-	auctions, err := uc.tcpClient.GetAuction(code, market)
-	if err != nil {
-		return nil, err
-	}
-	result, _ := json.Marshal(auctions)
-	return &TQLEXResponse{Data: json.RawMessage(result)}, nil
+	var result *TQLEXResponse
+	err := uc.tcpClient.withRetry(func() error {
+		defer func() { recover() }()
+		auctions, e := uc.tcpClient.GetAuction(code, market)
+		if e != nil {
+			return e
+		}
+		r, _ := json.Marshal(auctions)
+		result = &TQLEXResponse{Data: json.RawMessage(r)}
+		return nil
+	})
+	return result, err
 }
 
 // queryF10 handles TdxSharePCCW via TCP.
 func (uc *UnifiedClient) queryF10(body interface{}) (*TQLEXResponse, error) {
-	data, ok := body.(map[string]interface{})
+	data, ok := normalizeBody(body)
 	if !ok {
 		return nil, fmt.Errorf("invalid F10 request body type")
 	}
 	code := fmt.Sprintf("%v", data["Code"])
 	market := 0
-	if m, ok := data["Setcode"].(int); ok {
-		market = m
+	if v := toInt(data["Setcode"]); v != 0 {
+		market = v
 	}
 
 	// Try TCP first with panic recovery
@@ -382,25 +436,30 @@ func (uc *UnifiedClient) queryF10(body interface{}) (*TQLEXResponse, error) {
 
 // tryTCPF10 attempts to get F10 info via TCP, recovering from panics.
 func (uc *UnifiedClient) tryTCPF10(code string, market int) (*TQLEXResponse, error) {
-	defer func() { recover() }()
-	info, err := uc.tcpClient.GetF10(code, market)
-	if err != nil {
-		return nil, err
-	}
-	result, _ := json.Marshal(info)
-	return &TQLEXResponse{Data: json.RawMessage(result)}, nil
+	var result *TQLEXResponse
+	err := uc.tcpClient.withRetry(func() error {
+		defer func() { recover() }()
+		info, e := uc.tcpClient.GetF10(code, market)
+		if e != nil {
+			return e
+		}
+		r, _ := json.Marshal(info)
+		result = &TQLEXResponse{Data: json.RawMessage(r)}
+		return nil
+	})
+	return result, err
 }
 
 // queryCapitalFlow handles PBCapitalFlow via TCP.
 func (uc *UnifiedClient) queryCapitalFlow(body interface{}) (*TQLEXResponse, error) {
-	data, ok := body.(map[string]interface{})
+	data, ok := normalizeBody(body)
 	if !ok {
 		return nil, fmt.Errorf("invalid capital flow request body type")
 	}
 	code := fmt.Sprintf("%v", data["Code"])
 	market := 0
-	if m, ok := data["Setcode"].(int); ok {
-		market = m
+	if v := toInt(data["Setcode"]); v != 0 {
+		market = v
 	}
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
 		if result, err := uc.tryTCPCapitalFlow(code, market); err == nil {
@@ -411,24 +470,29 @@ func (uc *UnifiedClient) queryCapitalFlow(body interface{}) (*TQLEXResponse, err
 }
 
 func (uc *UnifiedClient) tryTCPCapitalFlow(code string, market int) (*TQLEXResponse, error) {
-	defer func() { recover() }()
-	reply, err := uc.tcpClient.GetCapitalFlow(code, market)
-	if err != nil {
-		return nil, err
-	}
-	result, _ := json.Marshal(reply)
-	return &TQLEXResponse{Data: json.RawMessage(result)}, nil
+	var result *TQLEXResponse
+	err := uc.tcpClient.withRetry(func() error {
+		defer func() { recover() }()
+		reply, e := uc.tcpClient.GetCapitalFlow(code, market)
+		if e != nil {
+			return e
+		}
+		r, _ := json.Marshal(reply)
+		result = &TQLEXResponse{Data: json.RawMessage(r)}
+		return nil
+	})
+	return result, err
 }
 
 // queryBoardList handles PBBoardList via TCP.
 func (uc *UnifiedClient) queryBoardList(body interface{}) (*TQLEXResponse, error) {
-	data, ok := body.(map[string]interface{})
+	data, ok := normalizeBody(body)
 	if !ok {
 		return nil, fmt.Errorf("invalid board list request body type")
 	}
 	boardType := fmt.Sprintf("%v", data["BoardType"])
 	count := 50
-	if c, ok := data["Count"].(int); ok {
+	if c := toInt(data["Count"]); c != 0 {
 		count = c
 	}
 	var bt BlockType
@@ -451,24 +515,29 @@ func (uc *UnifiedClient) queryBoardList(body interface{}) (*TQLEXResponse, error
 }
 
 func (uc *UnifiedClient) tryTCPBoardList(bt BlockType, count int) (*TQLEXResponse, error) {
-	defer func() { recover() }()
-	boards, err := uc.tcpClient.GetSectorBoards(bt)
-	if err != nil {
-		return nil, err
-	}
-	result, _ := json.Marshal(boards)
-	return &TQLEXResponse{Data: json.RawMessage(result)}, nil
+	var result *TQLEXResponse
+	err := uc.tcpClient.withRetry(func() error {
+		defer func() { recover() }()
+		boards, e := uc.tcpClient.GetSectorBoards(bt)
+		if e != nil {
+			return e
+		}
+		r, _ := json.Marshal(boards)
+		result = &TQLEXResponse{Data: json.RawMessage(r)}
+		return nil
+	})
+	return result, err
 }
 
 // queryBoardMembers handles PBBoardMembers via TCP.
 func (uc *UnifiedClient) queryBoardMembers(body interface{}) (*TQLEXResponse, error) {
-	data, ok := body.(map[string]interface{})
+	data, ok := normalizeBody(body)
 	if !ok {
 		return nil, fmt.Errorf("invalid board members request body type")
 	}
 	code := fmt.Sprintf("%v", data["BoardCode"])
 	count := 50
-	if c, ok := data["Count"].(int); ok {
+	if c := toInt(data["Count"]); c != 0 {
 		count = c
 	}
 	_ = count
@@ -481,24 +550,29 @@ func (uc *UnifiedClient) queryBoardMembers(body interface{}) (*TQLEXResponse, er
 }
 
 func (uc *UnifiedClient) tryTCPBoardMembers(boardCode string) (*TQLEXResponse, error) {
-	defer func() { recover() }()
-	stocks, err := uc.tcpClient.GetSectorBoardStocks(boardCode)
-	if err != nil {
-		return nil, err
-	}
-	result, _ := json.Marshal(stocks)
-	return &TQLEXResponse{Data: json.RawMessage(result)}, nil
+	var result *TQLEXResponse
+	err := uc.tcpClient.withRetry(func() error {
+		defer func() { recover() }()
+		stocks, e := uc.tcpClient.GetSectorBoardStocks(boardCode)
+		if e != nil {
+			return e
+		}
+		r, _ := json.Marshal(stocks)
+		result = &TQLEXResponse{Data: json.RawMessage(r)}
+		return nil
+	})
+	return result, err
 }
 
 // queryBoardRanking handles PBBoardRanking via TCP (falls back to scraper).
 func (uc *UnifiedClient) queryBoardRanking(body interface{}) (*TQLEXResponse, error) {
-	data, ok := body.(map[string]interface{})
+	data, ok := normalizeBody(body)
 	if !ok {
 		return nil, fmt.Errorf("invalid board ranking request body type")
 	}
 	boardType := fmt.Sprintf("%v", data["BoardType"])
 	topN := 10
-	if t, ok := data["TopN"].(int); ok {
+	if t := toInt(data["TopN"]); t != 0 {
 		topN = t
 	}
 	sortBy := fmt.Sprintf("%v", data["SortBy"])
@@ -520,22 +594,27 @@ func (uc *UnifiedClient) queryServerInfo(body interface{}) (*TQLEXResponse, erro
 }
 
 func (uc *UnifiedClient) tryTCPServerInfo() (*TQLEXResponse, error) {
-	defer func() { recover() }()
-	info := uc.tcpClient.GetServerInfo()
-	result, _ := json.Marshal(map[string]interface{}{"server_info": info, "status": "connected"})
-	return &TQLEXResponse{Data: json.RawMessage(result)}, nil
+	var result *TQLEXResponse
+	err := uc.tcpClient.withRetry(func() error {
+		defer func() { recover() }()
+		info := uc.tcpClient.GetServerInfo()
+		r, _ := json.Marshal(map[string]interface{}{"server_info": info, "status": "connected"})
+		result = &TQLEXResponse{Data: json.RawMessage(r)}
+		return nil
+	})
+	return result, err
 }
 
 // querySymbolInfo handles PBSymbolInfo via MAC TCP.
 func (uc *UnifiedClient) querySymbolInfo(body interface{}) (*TQLEXResponse, error) {
-	data, ok := body.(map[string]interface{})
+	data, ok := normalizeBody(body)
 	if !ok {
 		return nil, fmt.Errorf("invalid symbol info request body type")
 	}
 	code := fmt.Sprintf("%v", data["Code"])
 	market := 0
-	if m, ok := data["Setcode"].(int); ok {
-		market = m
+	if v := toInt(data["Setcode"]); v != 0 {
+		market = v
 	}
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
 		if result, err := uc.tryTCPSymbolInfo(code, market); err == nil {
@@ -546,25 +625,30 @@ func (uc *UnifiedClient) querySymbolInfo(body interface{}) (*TQLEXResponse, erro
 }
 
 func (uc *UnifiedClient) tryTCPSymbolInfo(code string, market int) (*TQLEXResponse, error) {
-	defer func() { recover() }()
-	reply, err := uc.tcpClient.GetSymbolInfo(code, market)
-	if err != nil {
-		return nil, err
-	}
-	result, _ := json.Marshal(reply)
-	return &TQLEXResponse{Data: json.RawMessage(result)}, nil
+	var result *TQLEXResponse
+	err := uc.tcpClient.withRetry(func() error {
+		defer func() { recover() }()
+		reply, e := uc.tcpClient.GetSymbolInfo(code, market)
+		if e != nil {
+			return e
+		}
+		r, _ := json.Marshal(reply)
+		result = &TQLEXResponse{Data: json.RawMessage(r)}
+		return nil
+	})
+	return result, err
 }
 
 // queryBelongBoard handles PBBelongBoard via TCP.
 func (uc *UnifiedClient) queryBelongBoard(body interface{}) (*TQLEXResponse, error) {
-	data, ok := body.(map[string]interface{})
+	data, ok := normalizeBody(body)
 	if !ok {
 		return nil, fmt.Errorf("invalid belong board request body type")
 	}
 	code := fmt.Sprintf("%v", data["Code"])
 	market := 0
-	if m, ok := data["Setcode"].(int); ok {
-		market = m
+	if v := toInt(data["Setcode"]); v != 0 {
+		market = v
 	}
 	_ = code
 	_ = market
@@ -574,16 +658,16 @@ func (uc *UnifiedClient) queryBelongBoard(body interface{}) (*TQLEXResponse, err
 
 // queryUnusual handles PBUnusual via TCP.
 func (uc *UnifiedClient) queryUnusual(body interface{}) (*TQLEXResponse, error) {
-	data, ok := body.(map[string]interface{})
+	data, ok := normalizeBody(body)
 	if !ok {
 		return nil, fmt.Errorf("invalid unusual request body type")
 	}
 	market := 0
-	if m, ok := data["Setcode"].(int); ok {
-		market = m
+	if v := toInt(data["Setcode"]); v != 0 {
+		market = v
 	}
 	count := 50
-	if c, ok := data["WantNum"].(int); ok {
+	if c := toInt(data["WantNum"]); c != 0 {
 		count = c
 	}
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
@@ -595,13 +679,18 @@ func (uc *UnifiedClient) queryUnusual(body interface{}) (*TQLEXResponse, error) 
 }
 
 func (uc *UnifiedClient) tryTCPUnusual(market, count int) (*TQLEXResponse, error) {
-	defer func() { recover() }()
-	data, err := uc.tcpClient.GetUnusual(market, count)
-	if err != nil {
-		return nil, err
-	}
-	result, _ := json.Marshal(data)
-	return &TQLEXResponse{Data: json.RawMessage(result)}, nil
+	var result *TQLEXResponse
+	err := uc.tcpClient.withRetry(func() error {
+		defer func() { recover() }()
+		data, e := uc.tcpClient.GetUnusual(market, count)
+		if e != nil {
+			return e
+		}
+		r, _ := json.Marshal(data)
+		result = &TQLEXResponse{Data: json.RawMessage(r)}
+		return nil
+	})
+	return result, err
 }
 
 // queryMarketStat handles PBMarketStat via TCP.
@@ -615,28 +704,33 @@ func (uc *UnifiedClient) queryMarketStat(body interface{}) (*TQLEXResponse, erro
 }
 
 func (uc *UnifiedClient) tryTCPMarketStat() (*TQLEXResponse, error) {
-	defer func() { recover() }()
-	count, err := uc.tcpClient.GetSecurityCount(0)
-	if err != nil {
-		return nil, err
-	}
-	result, _ := json.Marshal(map[string]interface{}{"sh_count": count, "sz_count": 0, "status": "ok"})
-	return &TQLEXResponse{Data: json.RawMessage(result)}, nil
+	var result *TQLEXResponse
+	err := uc.tcpClient.withRetry(func() error {
+		defer func() { recover() }()
+		count, e := uc.tcpClient.GetSecurityCount(0)
+		if e != nil {
+			return e
+		}
+		r, _ := json.Marshal(map[string]interface{}{"sh_count": count, "sz_count": 0, "status": "ok"})
+		result = &TQLEXResponse{Data: json.RawMessage(r)}
+		return nil
+	})
+	return result, err
 }
 
 // querySecurityList handles PBSecurityList via TCP.
 func (uc *UnifiedClient) querySecurityList(body interface{}) (*TQLEXResponse, error) {
-	data, ok := body.(map[string]interface{})
+	data, ok := normalizeBody(body)
 	if !ok {
 		return nil, fmt.Errorf("invalid security list request body type")
 	}
 	market := 0
-	if m, ok := data["Setcode"].(int); ok {
-		market = m
+	if v := toInt(data["Setcode"]); v != 0 {
+		market = v
 	}
 	start := uint16(0)
-	if s, ok := data["Start"].(int); ok {
-		start = uint16(s)
+	if sv := toInt(data["Start"]); sv != 0 {
+		start = uint16(sv)
 	}
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
 		if result, err := uc.tryTCPSecurityList(market, start); err == nil {
@@ -647,25 +741,30 @@ func (uc *UnifiedClient) querySecurityList(body interface{}) (*TQLEXResponse, er
 }
 
 func (uc *UnifiedClient) tryTCPSecurityList(market int, start uint16) (*TQLEXResponse, error) {
-	defer func() { recover() }()
-	reply, err := uc.tcpClient.GetSecurityList(market, start)
-	if err != nil {
-		return nil, err
-	}
-	result, _ := json.Marshal(reply)
-	return &TQLEXResponse{Data: json.RawMessage(result)}, nil
+	var result *TQLEXResponse
+	err := uc.tcpClient.withRetry(func() error {
+		defer func() { recover() }()
+		reply, e := uc.tcpClient.GetSecurityList(market, start)
+		if e != nil {
+			return e
+		}
+		r, _ := json.Marshal(reply)
+		result = &TQLEXResponse{Data: json.RawMessage(r)}
+		return nil
+	})
+	return result, err
 }
 
 // queryFinanceInfo handles PBGetFinanceInfo via TCP.
 func (uc *UnifiedClient) queryFinanceInfo(body interface{}) (*TQLEXResponse, error) {
-	data, ok := body.(map[string]interface{})
+	data, ok := normalizeBody(body)
 	if !ok {
 		return nil, fmt.Errorf("invalid finance info request body type")
 	}
 	code := fmt.Sprintf("%v", data["Code"])
 	market := 0
-	if m, ok := data["Setcode"].(int); ok {
-		market = m
+	if v := toInt(data["Setcode"]); v != 0 {
+		market = v
 	}
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
 		if result, err := uc.tryTCPFinanceInfo(code, market); err == nil {
@@ -676,13 +775,23 @@ func (uc *UnifiedClient) queryFinanceInfo(body interface{}) (*TQLEXResponse, err
 }
 
 func (uc *UnifiedClient) tryTCPFinanceInfo(code string, market int) (*TQLEXResponse, error) {
-	defer func() { recover() }()
-	reply, err := uc.tcpClient.GetFinanceInfo(code, market)
-	if err != nil {
-		return nil, err
-	}
-	result, _ := json.Marshal(reply)
-	return &TQLEXResponse{Data: json.RawMessage(result)}, nil
+	var result *TQLEXResponse
+	err := uc.tcpClient.withRetry(func() error {
+		defer func() { recover() }()
+		reply, e := uc.tcpClient.GetFinanceInfo(code, market)
+		if e != nil {
+			return e
+		}
+		r, _ := json.Marshal(reply)
+		// Extract only the stock_basic field which contains the finance info
+		var data map[string]interface{}
+		if r != nil {
+			json.Unmarshal(r, &data)
+		}
+		result = &TQLEXResponse{Data: json.RawMessage(r)}
+		return nil
+	})
+	return result, err
 }
 
 // RAGQuery implements the Client interface.
@@ -692,15 +801,12 @@ func (uc *UnifiedClient) RAGQuery(ctx context.Context, query string, topK int) (
 
 // queryQuoteList handles PBQuoteList via EastMoney push2 clist (HTTP TQLEX returns 503).
 func (uc *UnifiedClient) queryQuoteList(body interface{}) (*TQLEXResponse, error) {
-	data, ok := body.(map[string]interface{})
+	data, ok := normalizeBody(body)
 	if !ok {
 		return nil, fmt.Errorf("invalid quote list request body type")
 	}
 	count := 100
-	if c, ok := data["count"].(float64); ok {
-		count = int(c)
-	}
-	if c, ok := data["count"].(int); ok {
+	if c := toInt(data["count"]); c != 0 {
 		count = c
 	}
 	sortType := "f2"
@@ -733,19 +839,20 @@ func (uc *UnifiedClient) queryQuoteList(body interface{}) (*TQLEXResponse, error
 	return &TQLEXResponse{Data: json.RawMessage(encoded)}, nil
 }
 
-// queryFSTick handles PBFSTick via EastMoney (HTTP TQLEX returns 503).
+// queryFSTick handles PBFSTick via TCP (preferred) or EastMoney fallback.
 func (uc *UnifiedClient) queryFSTick(body interface{}) (*TQLEXResponse, error) {
-	data, ok := body.(TickRequestParams)
-	if !ok {
-		m, ok2 := body.(map[string]interface{})
-		if ok2 {
-			_ = m
-		}
-		return nil, fmt.Errorf("FSTick not available via HTTP TQLEX, use quote fallback")
+	code, market, err := extractCodeMarket(body)
+	if err != nil {
+		return nil, err
 	}
-	_ = data
-	code := data.Code
-	market := data.Market
+
+	// Try TCP first with panic recovery
+	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
+		if result, err := uc.tryTCPFSTick(code, market); err == nil {
+			return result, nil
+		}
+	}
+
 	setcodeStr := fmt.Sprintf("%d.%s", market, code)
 	hc := &http.Client{Timeout: 10 * time.Second}
 	url := fmt.Sprintf("https://push2delay.eastmoney.com/api/qt/stock/get?secid=%s&fields=f43,f44,f45,f46,f47,f48,f50,f51,f52,f55,f57,f58,f60,f71", setcodeStr)
@@ -761,15 +868,48 @@ func (uc *UnifiedClient) queryFSTick(body interface{}) (*TQLEXResponse, error) {
 	return &TQLEXResponse{Data: json.RawMessage(encoded)}, nil
 }
 
-// queryTrans handles PBTrans via EastMoney (HTTP TQLEX returns 503).
+func (uc *UnifiedClient) tryTCPFSTick(code string, market int) (*TQLEXResponse, error) {
+	var result *TQLEXResponse
+	err := uc.tcpClient.withRetry(func() error {
+		defer func() { recover() }()
+		data, e := uc.tcpClient.GetTickChart(code, market)
+		if e != nil {
+			return e
+		}
+		r, _ := json.Marshal(data)
+		// Convert to array format expected by client
+		var tickData interface{}
+		if r != nil {
+			json.Unmarshal(r, &tickData)
+		}
+		result = &TQLEXResponse{Data: json.RawMessage(r)}
+		return nil
+	})
+	return result, err
+}
+
+// queryTrans handles PBTrans via TCP (preferred) or EastMoney fallback.
 func (uc *UnifiedClient) queryTrans(body interface{}) (*TQLEXResponse, error) {
-	data, ok := body.(TransRequestParams)
-	if !ok {
-		return nil, fmt.Errorf("Trans not available via HTTP TQLEX, use quote fallback")
+	code, market, err := extractCodeMarket(body)
+	if err != nil {
+		return nil, err
 	}
-	_ = data
-	code := data.Code
-	market := data.Market
+	count := 100
+	if m, ok := normalizeBody(body); ok {
+		if c := toInt(m["count"]); c != 0 {
+			count = c
+		}
+	} else if tp, ok := body.(TransRequestParams); ok && tp.Count > 0 {
+		count = tp.Count
+	}
+
+	// Try TCP first with panic recovery
+	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
+		if result, err := uc.tryTCPTrans(code, market, count); err == nil {
+			return result, nil
+		}
+	}
+
 	setcodeStr := fmt.Sprintf("%d.%s", market, code)
 	hc := &http.Client{Timeout: 10 * time.Second}
 	url := fmt.Sprintf("https://push2delay.eastmoney.com/api/qt/stock/get?secid=%s&fields=f43,f44,f45,f46,f47,f48,f50,f51,f52,f55,f57,f58,f60,f71", setcodeStr)
@@ -783,6 +923,37 @@ func (uc *UnifiedClient) queryTrans(body interface{}) (*TQLEXResponse, error) {
 	json.Unmarshal(bodyBytes, &result)
 	encoded, _ := json.Marshal(result)
 	return &TQLEXResponse{Data: json.RawMessage(encoded)}, nil
+}
+
+func (uc *UnifiedClient) tryTCPTrans(code string, market, count int) (*TQLEXResponse, error) {
+	var result *TQLEXResponse
+	err := uc.tcpClient.withRetry(func() error {
+		defer func() { recover() }()
+		data, e := uc.tcpClient.GetTransaction(code, market, count)
+		if e != nil {
+			return e
+		}
+		r, _ := json.Marshal(data)
+		result = &TQLEXResponse{Data: json.RawMessage(r)}
+		return nil
+	})
+	return result, err
+}
+
+// extractCodeMarket extracts the Code and Setcode/market fields from a
+// request body that may be a typed struct or a normalized map.
+func extractCodeMarket(body interface{}) (string, int, error) {
+	if m, ok := normalizeBody(body); ok {
+		return fmt.Sprintf("%v", m["Code"]), toInt(m["Setcode"]), nil
+	}
+	switch b := body.(type) {
+	case TickRequestParams:
+		return b.Code, b.Market, nil
+	case TransRequestParams:
+		return b.Code, b.Market, nil
+	default:
+		return "", 0, fmt.Errorf("invalid request body type: %T", body)
+	}
 }
 
 // Close releases all resources.
@@ -1057,6 +1228,10 @@ func (uc *UnifiedClient) initScrapers() {
 		uc.fundHoldingClient = scraper.NewFundHoldingClient()
 		uc.sinaClient = scraper.NewSinaClient()
 		uc.tableParser = scraper.NewTableParser()
+		uc.ocrClient = scraper.NewOCRClient()
+		if s, err := scraper.NewScraper(30 * time.Second); err == nil {
+			uc.webScraper = s
+		}
 	})
 }
 

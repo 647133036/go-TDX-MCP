@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -97,6 +98,9 @@ const (
 	ToolEastMoneySectorStocks     = "tdx_eastmoney_sector_stocks"
 	ToolEastMoneyUpCount          = "tdx_eastmoney_updown_count"
 	ToolEastMoneyBelongBoard      = "tdx_eastmoney_belong_board"
+	ToolEastMoneyCompanyProfile   = "tdx_eastmoney_company_profile"
+	ToolEastMoneyFinancialData    = "tdx_eastmoney_financial_data"
+	ToolEastMoneyCapitalFlow     = "tdx_eastmoney_capital_flow"
 	ToolFundNavLatest             = "tdx_fund_nav_latest"
 	ToolFundNavHistoryNew         = "tdx_fund_nav_history_new"
 	ToolMarginTradeSummary        = "tdx_margin_trade_summary"
@@ -487,6 +491,9 @@ func GetAllNewTools() []mcp.Tool {
 		NewEastMoneySectorStocksTool(),
 		NewEastMoneyUpCountTool(),
 		NewEastMoneyBelongBoardTool(),
+		NewEastMoneyCompanyProfileTool(),
+		NewEastMoneyFinancialDataTool(),
+		NewEastMoneyCapitalFlowTool(),
 		NewFundNavLatestTool(),
 		NewFundNavHistoryNewTool(),
 		NewMarginTradeSummaryTool(),
@@ -705,6 +712,12 @@ func GetNewHandler(name string) ToolHandler {
 		return HandleEastMoneyUpCount
 	case ToolEastMoneyBelongBoard:
 		return HandleEastMoneyBelongBoard
+	case ToolEastMoneyCompanyProfile:
+		return HandleEastMoneyCompanyProfile
+	case ToolEastMoneyFinancialData:
+		return HandleEastMoneyFinancialData
+	case ToolEastMoneyCapitalFlow:
+		return HandleEastMoneyCapitalFlow
 	case ToolFundNavLatest:
 		return HandleFundNavLatest
 	case ToolFundNavHistoryNew:
@@ -2457,13 +2470,13 @@ func NewEastMoneyRealtimeQuoteTool() mcp.Tool {
 
 func NewEastMoneyKlineHistoryTool() mcp.Tool {
 	return mcp.NewTool(ToolEastMoneyKlineHistory,
-		mcp.WithDescription("东方财富K线历史：获取东财push2his接口的K线数据"),
+		mcp.WithDescription("K线历史：通过TDX TCP获取K线数据（日线/周线/月线/60分钟），不支持1/5/15/30分钟线"),
 		mcp.WithString("secid",
 			mcp.Required(),
 			mcp.Description("证券ID，格式 '0.000001'(深圳) 或 '1.600000'(上海)"),
 		),
 		mcp.WithString("klt",
-			mcp.Description("K线周期: 101(1min)/102(5min)/103(15min)/104(30min)/105(60min)/1(日)/2(周)/3(月)"),
+			mcp.Description("K线周期: 105(60min)/1(日)/2(周)/3(月)。不支持1/5/15/30分钟线"),
 		),
 		mcp.WithNumber("fqt",
 			mcp.Description("复权类型: 1(前复权)/2(后复权)/0(不复权)"),
@@ -2538,6 +2551,42 @@ func NewEastMoneyBelongBoardTool() mcp.Tool {
 		mcp.WithString("secid",
 			mcp.Required(),
 			mcp.Description("证券ID，格式 '0.000001'"),
+		),
+	)
+}
+
+func NewEastMoneyCompanyProfileTool() mcp.Tool {
+	return mcp.NewTool(ToolEastMoneyCompanyProfile,
+		mcp.WithDescription("东财公司概况：获取上市公司基本资料（名称/行业/高管/员工数/公司简介等）"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码，如 '000001'"),
+		),
+	)
+}
+
+func NewEastMoneyFinancialDataTool() mcp.Tool {
+	return mcp.NewTool(ToolEastMoneyFinancialData,
+		mcp.WithDescription("东财财务数据：获取上市公司财务指标（EPS/营收/净利润/ROE等）"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码，如 '000001'"),
+		),
+		mcp.WithNumber("page_size",
+			mcp.Description("返回期数（默认4，最大20）"),
+		),
+	)
+}
+
+func NewEastMoneyCapitalFlowTool() mcp.Tool {
+	return mcp.NewTool(ToolEastMoneyCapitalFlow,
+		mcp.WithDescription("东财资金流向：获取个股主力/超大单/大单/中单/小单资金流向"),
+		mcp.WithString("secid",
+			mcp.Required(),
+			mcp.Description("证券ID，格式 '0.000001'(深圳) 或 '1.600000'(上海)"),
+		),
+		mcp.WithNumber("days",
+			mcp.Description("返回天数（默认5，最大120）"),
 		),
 	)
 }
@@ -3968,26 +4017,286 @@ func HandleEastMoneyKlineHistory(ctx context.Context, client Client, request mcp
 	if err != nil {
 		return mcp.NewToolResultError("secid 参数必填"), nil
 	}
-	klt := "101"
+	klt := "1"
 	if v, ok := request.GetArguments()["klt"].(string); ok && v != "" {
 		klt = v
 	}
+	fqt := 0
+	if v, ok := request.GetArguments()["fqt"].(float64); ok && v > 0 && v <= 2 {
+		fqt = int(v)
+	}
 	lmt := 120
-	if v, ok := request.GetArguments()["lmt"].(float64); ok {
+	if v, ok := request.GetArguments()["lmt"].(float64); ok && v > 0 {
 		lmt = int(v)
 	}
-	type emKlineClient interface {
-		KlineHistory(secid, klt string, count int) ([]map[string]interface{}, error)
+
+	// Parse secid: "0.000001" -> code="000001", market=0
+	parts := strings.Split(secid, ".")
+	var code string
+	market := 0
+	if len(parts) == 2 {
+		var err error
+		market, err = strconv.Atoi(parts[0])
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("secid 格式错误，应为 '0.000001' 或 '1.600000'")), nil
+		}
+		code = parts[1]
+	} else {
+		return mcp.NewToolResultError(fmt.Sprintf("secid 格式错误，应为 '0.000001' 或 '1.600000'")), nil
 	}
-	c, ok := client.(emKlineClient)
-	if !ok {
-		return mcp.NewToolResultError("当前客户端不支持东财K线查询"), nil
+
+	// Convert EastMoney klt to TDX period code
+	// klt: 101=1min, 102=5min, 103=15min, 104=30min, 105=60min, 1=日, 2=周, 3=月
+	// TDX period: 9=1min, 10=5min, 11=15min, 12=30min, 3=60min, 4=日, 5=周, 6=月
+	var period int
+	switch klt {
+	case "101", "1":
+		if klt == "101" {
+			period = 9
+		} else {
+			period = 4
+		}
+	case "102", "5":
+		period = 10
+	case "103", "15":
+		period = 11
+	case "104", "30":
+		period = 12
+	case "105", "60":
+		period = 3
+	case "2":
+		period = 5
+	case "3":
+		period = 6
+	case "13":
+		period = 13
+	case "14":
+		period = 14
+	default:
+		period = 4
 	}
-	result, err := c.KlineHistory(secid, klt, lmt)
+
+	// Convert fqt to TQFlag
+	// 0=no adj -> 11, 1=forward -> 15, 2=backward -> 17
+	tqFlag := 11
+	if fqt == 1 {
+		tqFlag = 15
+	} else if fqt == 2 {
+		tqFlag = 17
+	}
+
+	reqBody := KlineRequest{
+		Head:          TDXHead{Target: "0", CharSet: "UTF8"},
+		Code:          strings.TrimSpace(code),
+		Setcode:       market,
+		Period:        period,
+		Startxh:       0,
+		WantNum:       lmt,
+		TQFlag:        tqFlag,
+		MPData:        0,
+		HasAttachInfo: 1,
+		HasLtgb:       0,
+		ForRefresh:    1,
+		HasIpoPrice:   0,
+	}
+
+	resp, err := client.TQLEXQuery(ctx, "TdxShare.PBFXT", reqBody)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("获取K线失败: %v", err)), nil
 	}
-	return mcp.NewToolResultText(toJSON(result)), nil
+	if resp.Data == nil {
+		return mcp.NewToolResultError("K线查询返回空数据"), nil
+	}
+
+	// Serialize resp.Data to []byte regardless of type (JSON middleware path)
+	var raw []byte
+	switch d := resp.Data.(type) {
+	case json.RawMessage:
+		raw = []byte(d)
+	case []byte:
+		raw = d
+	case string:
+		raw = []byte(d)
+	default:
+		marshaled, err := json.Marshal(d)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("序列化K线数据失败: %v", err)), nil
+		}
+		raw = marshaled
+	}
+
+	// Try TCP format: JSON array of bar objects [ {Year, Open, High, Low, Close, Volume, Amount}, ... ]
+	var tcpBars []map[string]interface{}
+	if json.Unmarshal(raw, &tcpBars) == nil && len(tcpBars) > 0 {
+		results := make([]map[string]interface{}, 0, len(tcpBars))
+		for _, bm := range tcpBars {
+			kline := make(map[string]interface{})
+			if yr, ok := bm["Year"]; ok {
+				if s, ok := yr.(float64); ok {
+					ymd := int(s)
+					y := ymd / 10000
+					m := (ymd / 100) % 100
+					d := ymd % 100
+					kline["date"] = fmt.Sprintf("%04d%02d%02d", y, m, d)
+				}
+			}
+			if o, ok := bm["Open"]; ok {
+				kline["open"] = o
+			}
+			if h, ok := bm["High"]; ok {
+				kline["high"] = h
+			}
+			if l, ok := bm["Low"]; ok {
+				kline["low"] = l
+			}
+			if c, ok := bm["Close"]; ok {
+				kline["close"] = c
+			}
+			if vol, ok := bm["Volume"]; ok {
+				kline["volume"] = vol
+			}
+			if amt, ok := bm["Amount"]; ok {
+				kline["amount"] = amt
+			}
+			results = append(results, kline)
+		}
+		return mcp.NewToolResultText(toJSON(results)), nil
+	}
+
+	if len(raw) == 0 {
+		return mcp.NewToolResultError("K线查询返回空数据"), nil
+	}
+
+	// HTTP format: object with ListHead/ListItem
+	var respMap map[string]interface{}
+	if err := json.Unmarshal(raw, &respMap); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("解析K线响应失败: %v", err)), nil
+	}
+
+	// Extract column headers
+	headData, ok := respMap["ListHead"]
+	if !ok {
+		return mcp.NewToolResultError("K线响应缺少 ListHead"), nil
+	}
+	headMap, ok := headData.(map[string]interface{})
+	if !ok {
+		return mcp.NewToolResultError("ListHead 格式错误"), nil
+	}
+	itemHeadRaw, ok := headMap["ItemHead"]
+	if !ok {
+		return mcp.NewToolResultError("ListHead 缺少 ItemHead"), nil
+	}
+	headers, ok := itemHeadRaw.([]interface{})
+	if !ok {
+		return mcp.NewToolResultError("ItemHead 格式错误"), nil
+	}
+
+	// Build column index map
+	colIdx := make(map[string]int, len(headers))
+	for i, h := range headers {
+		if s, ok := h.(string); ok {
+			colIdx[s] = i
+		}
+	}
+
+	// Extract data rows
+	listItems, ok := respMap["ListItem"]
+	if !ok {
+		return mcp.NewToolResultError("K线响应缺少 ListItem"), nil
+	}
+	items, ok := listItems.([]interface{})
+	if !ok {
+		return mcp.NewToolResultError("ListItem 格式错误"), nil
+	}
+
+	idxData := colIdx["Data"]
+	idxOpen := colIdx["Open"]
+	idxHigh := colIdx["High"]
+	idxLow := colIdx["Low"]
+	idxClose := colIdx["Close"]
+	idxAmount := colIdx["Amount"]
+	idxVolume := colIdx["Volume"]
+
+	results := make([]map[string]interface{}, 0, len(items))
+	for _, item := range items {
+		rowMap, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		rawItem, ok := rowMap["Item"]
+		if !ok {
+			continue
+		}
+		fields, ok := rawItem.([]interface{})
+		if !ok {
+			continue
+		}
+
+		if len(fields) == 0 {
+			continue
+		}
+
+		kline := make(map[string]interface{})
+
+		// Date
+		if idxData >= 0 {
+			if s, ok := fields[idxData].(string); ok {
+				kline["date"] = s
+			}
+		}
+		// Open
+		if idxOpen >= 0 {
+			if s, ok := fields[idxOpen].(string); ok {
+				var v float64
+				fmt.Sscanf(s, "%f", &v)
+				kline["open"] = v
+			}
+		}
+		// High
+		if idxHigh >= 0 {
+			if s, ok := fields[idxHigh].(string); ok {
+				var v float64
+				fmt.Sscanf(s, "%f", &v)
+				kline["high"] = v
+			}
+		}
+		// Low
+		if idxLow >= 0 {
+			if s, ok := fields[idxLow].(string); ok {
+				var v float64
+				fmt.Sscanf(s, "%f", &v)
+				kline["low"] = v
+			}
+		}
+		// Close
+		if idxClose >= 0 {
+			if s, ok := fields[idxClose].(string); ok {
+				var v float64
+				fmt.Sscanf(s, "%f", &v)
+				kline["close"] = v
+			}
+		}
+		// Volume
+		if idxVolume >= 0 {
+			if s, ok := fields[idxVolume].(string); ok {
+				var v float64
+				fmt.Sscanf(s, "%f", &v)
+				kline["volume"] = v
+			}
+		}
+		// Amount
+		if idxAmount >= 0 {
+			if s, ok := fields[idxAmount].(string); ok {
+				var v float64
+				fmt.Sscanf(s, "%f", &v)
+				kline["amount"] = v
+			}
+		}
+
+		results = append(results, kline)
+	}
+
+	return mcp.NewToolResultText(toJSON(results)), nil
 }
 
 func HandleEastMoneyStockChanges(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -4100,6 +4409,71 @@ func HandleEastMoneyBelongBoard(ctx context.Context, client Client, request mcp.
 	result, err := c.BelongBoard(secid)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("获取板块归属失败: %v", err)), nil
+	}
+	return mcp.NewToolResultText(toJSON(result)), nil
+}
+
+func HandleEastMoneyCompanyProfile(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	code, err := request.RequireString("code")
+	if err != nil {
+		return mcp.NewToolResultError("code 参数必填"), nil
+	}
+	type emProfileClient interface {
+		CompanyProfile(code string) (map[string]interface{}, error)
+	}
+	c, ok := client.(emProfileClient)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持公司概况查询"), nil
+	}
+	result, err := c.CompanyProfile(code)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("获取公司概况失败: %v", err)), nil
+	}
+	return mcp.NewToolResultText(toJSON(result)), nil
+}
+
+func HandleEastMoneyFinancialData(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	code, err := request.RequireString("code")
+	if err != nil {
+		return mcp.NewToolResultError("code 参数必填"), nil
+	}
+	pageSize := 4
+	if v, ok := request.GetArguments()["page_size"].(float64); ok && v > 0 {
+		pageSize = int(v)
+	}
+	type emFinanceClient interface {
+		FinancialData(code string, pageSize int) ([]map[string]interface{}, error)
+	}
+	c, ok := client.(emFinanceClient)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持财务数据查询"), nil
+	}
+	result, err := c.FinancialData(code, pageSize)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("获取财务数据失败: %v", err)), nil
+	}
+	return mcp.NewToolResultText(toJSON(result)), nil
+}
+
+func HandleEastMoneyCapitalFlow(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	secid, err := request.RequireString("secid")
+	if err != nil {
+		return mcp.NewToolResultError("secid 参数必填"), nil
+	}
+	days := 5
+	if v, ok := request.GetArguments()["days"].(float64); ok && v > 0 {
+		days = int(v)
+	}
+	type emCapitalFlowClient interface {
+		CapitalFlow(secid string, days int) ([]map[string]interface{}, error)
+	}
+	c, ok := client.(emCapitalFlowClient)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持资金流向查询"), nil
+	}
+	result, err := c.CapitalFlow(secid, days)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("获取资金流向失败: %v", err)), nil
 	}
 	return mcp.NewToolResultText(toJSON(result)), nil
 }
@@ -5449,14 +5823,25 @@ func HandleStockDividendInfo(ctx context.Context, client Client, request mcp.Cal
 	if v, ok := request.GetArguments()["market"].(float64); ok {
 		market = v
 	}
+	type dividendClient interface {
+		GetStockDividendInfo(code string, market int) []map[string]interface{}
+	}
+	dc, ok := client.(dividendClient)
+	if ok {
+		data := dc.GetStockDividendInfo(code, int(market))
+		if data != nil {
+			return mcp.NewToolResultText(toJSON(map[string]interface{}{
+				"code":   code,
+				"market": int(market),
+				"data":   data,
+			})), nil
+		}
+	}
 	return mcp.NewToolResultText(toJSON(map[string]interface{}{
-		"code":   code,
-		"market": int(market),
-		"message": "分红数据通过TQLEX PBFXT接口获取，需TCP连接",
-		"data": []map[string]interface{}{
-			{"year": "2024", "dividend_per_share": "0.255", "description": "每10股派25.5元(含税)"},
-			{"year": "2023", "dividend_per_share": "0.230", "description": "每10股派23.0元(含税)"},
-		},
+		"code":    code,
+		"market":  int(market),
+		"message": "分红数据暂不可用，请确保TCP连接正常",
+		"data":    []map[string]interface{}{},
 	})), nil
 }
 
@@ -5469,13 +5854,33 @@ func HandleStockSplitInfo(ctx context.Context, client Client, request mcp.CallTo
 	if v, ok := request.GetArguments()["market"].(float64); ok {
 		market = v
 	}
+	type splitClient interface {
+		GetStockDividendInfo(code string, market int) []map[string]interface{}
+	}
+	sc, ok := client.(splitClient)
+	if ok {
+		data := sc.GetStockDividendInfo(code, int(market))
+		if data != nil {
+			splits := make([]map[string]interface{}, 0)
+			for _, d := range data {
+				songzhuang, _ := d["songzhuang_per_10"].(float64)
+				peigu, _ := d["peigu_per_10"].(float64)
+				if songzhuang > 0 || peigu > 0 {
+					splits = append(splits, d)
+				}
+			}
+			return mcp.NewToolResultText(toJSON(map[string]interface{}{
+				"code":   code,
+				"market": int(market),
+				"data":   splits,
+			})), nil
+		}
+	}
 	return mcp.NewToolResultText(toJSON(map[string]interface{}{
-		"code":   code,
-		"market": int(market),
-		"message": "拆股送转数据通过TQLEX PBFXT接口获取，需TCP连接",
-		"data": []map[string]interface{}{
-			{"date": "2023-05-22", "split_ratio": "10送3转2派5", "description": "每10股送3股转增2股派5元"},
-		},
+		"code":    code,
+		"market":  int(market),
+		"message": "拆股送转数据暂不可用，请确保TCP连接正常",
+		"data":    []map[string]interface{}{},
 	})), nil
 }
 
@@ -5608,10 +6013,29 @@ func HandleETFList(ctx context.Context, client Client, request mcp.CallToolReque
 	if v, ok := request.GetArguments()["limit"].(float64); ok {
 		limit = int(v)
 	}
+	type emClient interface {
+		SecurityList(fs, fields string, pn, pz int) ([]map[string]interface{}, error)
+	}
+	ec, ok := client.(emClient)
+	if ok {
+		fs := "m:0+t:8,m:1+t:8"
+		if market == "0" || market == "sz" {
+			fs = "m:0+t:8"
+		} else if market == "1" || market == "sh" {
+			fs = "m:1+t:8"
+		}
+		results, err := ec.SecurityList(fs, "f2,f3,f12,f14,f20,f21", 1, limit)
+		if err == nil && len(results) > 0 {
+			return mcp.NewToolResultText(toJSON(map[string]interface{}{
+				"market": market,
+				"limit":  limit,
+				"data":   results,
+			})), nil
+		}
+	}
 	return mcp.NewToolResultText(toJSON(map[string]interface{}{
 		"market": market,
 		"limit":  limit,
-		"message": "ETF列表通过东方财富API获取",
 		"data":   []map[string]interface{}{},
 	})), nil
 }
@@ -5621,9 +6045,22 @@ func HandleETFInfo(ctx context.Context, client Client, request mcp.CallToolReque
 	if err != nil {
 		return mcp.NewToolResultError("etf_code 参数必填"), nil
 	}
+	type emSymbolClient interface {
+		SymbolInfo(secid string) (map[string]interface{}, error)
+	}
+	ec, ok := client.(emSymbolClient)
+	if ok {
+		info, err := ec.SymbolInfo(etfCode)
+		if err == nil && info != nil {
+			return mcp.NewToolResultText(toJSON(map[string]interface{}{
+				"etf_code": etfCode,
+				"data":     info,
+			})), nil
+		}
+	}
 	return mcp.NewToolResultText(toJSON(map[string]interface{}{
 		"etf_code": etfCode,
-		"message":  "ETF详情通过东方财富API获取",
+		"message":  "ETF详情暂不可用",
 	})), nil
 }
 

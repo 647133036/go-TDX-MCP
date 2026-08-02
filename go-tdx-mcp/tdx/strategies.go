@@ -1172,13 +1172,18 @@ func applyAdjustToBars(bars []proto.SecurityBar, contextBars []proto.SecurityBar
 		}
 	case 2: // 后复权
 		cumulative := 1.0
+		eventIdx := 0
+		sortedEvents := make([]XdXrEvent, len(events))
+		copy(sortedEvents, events)
+		sort.Slice(sortedEvents, func(i, j int) bool {
+			return sortedEvents[i].DateKey() < sortedEvents[j].DateKey()
+		})
 		for i := range bars {
-			for _, evt := range events {
-				if evt.DateKey() <= bars[i].Year*10000+bars[i].Month*100+bars[i].Day {
-					if f, ok := factorMap[evt.DateKey()]; ok {
-						cumulative *= 1.0 / f
-					}
+			for eventIdx < len(sortedEvents) && sortedEvents[eventIdx].DateKey() <= bars[i].Year*10000+bars[i].Month*100+bars[i].Day {
+				if f, ok := factorMap[sortedEvents[eventIdx].DateKey()]; ok {
+					cumulative *= 1.0 / f
 				}
+				eventIdx++
 			}
 			bars[i].Open = RoundPrice(bars[i].Open * cumulative)
 			bars[i].High = RoundPrice(bars[i].High * cumulative)

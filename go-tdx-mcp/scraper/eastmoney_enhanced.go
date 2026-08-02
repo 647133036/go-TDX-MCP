@@ -6,6 +6,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -642,7 +643,7 @@ func (e *EastMoneyScraper) YesterdayLimitUp(date string) ([]map[string]interface
 	}
 
 	type yzItem struct {
-		C    int             `json:"c"`
+		C    json.RawMessage `json:"c"`
 		M    int             `json:"m"`
 		N    string          `json:"n"`
 		P    json.RawMessage `json:"p"`
@@ -690,9 +691,22 @@ func (e *EastMoneyScraper) YesterdayLimitUp(date string) ([]map[string]interface
 			yesterdayTime = fmt.Sprintf("%06d", item.Yfbt)
 		}
 
+		stockCode := ""
+		if item.C != nil {
+			var s string
+			if err := json.Unmarshal(item.C, &s); err == nil {
+				stockCode = s
+			} else {
+				var n int
+				if err := json.Unmarshal(item.C, &n); err == nil {
+					stockCode = fmt.Sprintf("%06d", n)
+				}
+			}
+		}
+
 		results = append(results, map[string]interface{}{
 			"date":           date,
-			"stock_code":     fmt.Sprintf("%d", item.C),
+			"stock_code":     stockCode,
 			"stock_name":     item.N,
 			"market":         item.M,
 			"price":          price,
@@ -911,7 +925,7 @@ func (e *EastMoneyScraper) KlineHistory(secid, klt string, count int) ([]map[str
 	}
 
 	url := fmt.Sprintf(
-		"https://push2his.eastmoney.com/api/qt/stock/kline/get"+
+		"http://push2his.eastmoney.com/api/qt/stock/kline/get"+
 			"?secid=%s&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"+
 			"&klt=%s&fqt=1&beg=19900101&end=20500101&lmt=%d&_%d",
 		secid, klt, count, time.Now().UnixMilli(),
@@ -1134,8 +1148,8 @@ func (e *EastMoneyScraper) SymbolInfo(secid string) (map[string]interface{}, err
 // BelongBoard fetches boards a stock belongs to.
 func (e *EastMoneyScraper) BelongBoard(secid string) ([]map[string]interface{}, error) {
 	url := fmt.Sprintf(
-		"https://push2delay.eastmoney.com/api/qt/clist/get"+
-			"?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=%s+f:!50&fields=f12,f14",
+		"https://push2delay.eastmoney.com/api/qt/stock/get"+
+			"?secid=%s&fields=f57,f58,f127,f128,f129",
 		secid,
 	)
 
@@ -1144,25 +1158,36 @@ func (e *EastMoneyScraper) BelongBoard(secid string) ([]map[string]interface{}, 
 		return nil, err
 	}
 
-	type rawItem struct {
-		F12 string `json:"f12"`
-		F14 string `json:"f14"`
-	}
-
 	var parsed struct {
 		Data struct {
-			Diff []rawItem `json:"diff"`
+			F57  string `json:"f57"`
+			F58  string `json:"f58"`
+			F127 string `json:"f127"`
+			F128 string `json:"f128"`
+			F129 string `json:"f129"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return nil, err
 	}
 
-	results := make([]map[string]interface{}, 0, len(parsed.Data.Diff))
-	for _, item := range parsed.Data.Diff {
+	results := make([]map[string]interface{}, 0, 3)
+	if parsed.Data.F127 != "" {
 		results = append(results, map[string]interface{}{
-			"board_code": item.F12,
-			"board_name": item.F14,
+			"board_type": "industry",
+			"board_name": parsed.Data.F127,
+		})
+	}
+	if parsed.Data.F128 != "" {
+		results = append(results, map[string]interface{}{
+			"board_type": "region",
+			"board_name": parsed.Data.F128,
+		})
+	}
+	if parsed.Data.F129 != "" {
+		results = append(results, map[string]interface{}{
+			"board_type": "concept",
+			"board_name": parsed.Data.F129,
 		})
 	}
 	return results, nil
@@ -1204,6 +1229,147 @@ func (e *EastMoneyScraper) SecurityCount(secid string) (map[string]interface{}, 
 		"up":    int(d.F129),
 		"down":  int(d.F130),
 	}, nil
+}
+
+// CompanyProfile fetches company basic info from EastMoney F10 CompanySurvey API.
+// code: 6-digit stock code (e.g., "000001" for 平安银行).
+func (e *EastMoneyScraper) CompanyProfile(code string) (map[string]interface{}, error) {
+	code = strings.TrimSpace(code)
+	code = strings.TrimPrefix(code, "SH")
+	code = strings.TrimPrefix(code, "SZ")
+	prefix := "SZ"
+	if len(code) == 6 && code[0] == '6' {
+		prefix = "SH"
+	}
+	url := fmt.Sprintf("https://emweb.securities.eastmoney.com/PC_HSF10/CompanySurvey/CompanySurveyAjax?code=%s%s", prefix, code)
+	body, err := e.doJSON(url, nil)
+	if err != nil {
+		return nil, err
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+	jbzl, _ := parsed["jbzl"].(map[string]interface{})
+	fxxg, _ := parsed["fxxg"].(map[string]interface{})
+	result := make(map[string]interface{})
+	if jbzl != nil {
+		for k, v := range jbzl {
+			result[k] = v
+		}
+	}
+	if fxxg != nil {
+		for k, v := range fxxg {
+			result["fxxg_"+k] = v
+		}
+	}
+	return result, nil
+}
+
+// FinancialData fetches financial data from EastMoney datacenter API.
+// code: 6-digit stock code (e.g., "000001").
+// pageSize: number of periods to return (default 4).
+func (e *EastMoneyScraper) FinancialData(code string, pageSize int) ([]map[string]interface{}, error) {
+	code = strings.TrimSpace(code)
+	code = strings.TrimPrefix(code, "SH")
+	code = strings.TrimPrefix(code, "SZ")
+	if pageSize < 1 {
+		pageSize = 4
+	}
+	if pageSize > 20 {
+		pageSize = 20
+	}
+	filter := fmt.Sprintf("(SECURITY_CODE=%s)", url.QueryEscape(`"`+code+`"`))
+	url := fmt.Sprintf(
+		"https://datacenter-web.eastmoney.com/api/data/v1/get"+
+			"?reportName=RPT_LICO_FN_CPD"+
+			"&columns=SECURITY_CODE,SECURITY_NAME_ABBR,REPORTDATE,BASIC_EPS,DEDUCT_BASIC_EPS,"+
+			"TOTAL_OPERATE_INCOME,PARENT_NETPROFIT,WEIGHTAVG_ROE,YSTZ,SJLTZ,BPS,MGJYXJJE,XSMLL"+
+			"&filter=%s&pageNumber=1&pageSize=%d&sortTypes=-1&sortColumns=REPORTDATE",
+		filter, pageSize,
+	)
+	body, err := e.doJSON(url, nil)
+	if err != nil {
+		return nil, err
+	}
+	var parsed struct {
+		Result struct {
+			Data []map[string]interface{} `json:"data"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+	return parsed.Result.Data, nil
+}
+
+// CapitalFlow fetches capital flow (money flow) data for a stock.
+// secid: EastMoney secid format, e.g., "0.000001" for 平安银行.
+// returns daily money flow records with fields: date, main_net_inflow, super_large_net_inflow,
+// large_net_inflow, medium_net_inflow, small_net_inflow.
+func (e *EastMoneyScraper) CapitalFlow(secid string, days int) ([]map[string]interface{}, error) {
+	if days < 1 {
+		days = 5
+	}
+	if days > 120 {
+		days = 120
+	}
+	url := fmt.Sprintf(
+		"https://push2delay.eastmoney.com/api/qt/stock/fflow/daykline/get"+
+			"?secid=%s&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65"+
+			"&lmt=%d",
+		secid, days,
+	)
+	body, err := e.doJSON(url, nil)
+	if err != nil {
+		return nil, err
+	}
+	var parsed struct {
+		Data struct {
+			Klines []string `json:"klines"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+	results := make([]map[string]interface{}, 0, len(parsed.Data.Klines))
+	for _, line := range parsed.Data.Klines {
+		parts := strings.Split(line, ",")
+		if len(parts) < 6 {
+			continue
+		}
+		item := map[string]interface{}{
+			"date":                  parts[0],
+			"main_net_inflow":       parseFloat(parts[1]),
+			"super_large_net_inflow": parseFloat(parts[2]),
+			"large_net_inflow":      parseFloat(parts[3]),
+			"medium_net_inflow":     parseFloat(parts[4]),
+			"small_net_inflow":      parseFloat(parts[5]),
+		}
+		if len(parts) >= 7 {
+			item["main_net_inflow_pct"] = parseFloat(parts[6])
+		}
+		if len(parts) >= 8 {
+			item["super_large_pct"] = parseFloat(parts[7])
+		}
+		if len(parts) >= 9 {
+			item["large_pct"] = parseFloat(parts[8])
+		}
+		if len(parts) >= 10 {
+			item["medium_pct"] = parseFloat(parts[9])
+		}
+		if len(parts) >= 11 {
+			item["small_pct"] = parseFloat(parts[10])
+		}
+		if len(parts) >= 12 {
+			item["close"] = parseFloat(parts[11])
+		}
+		if len(parts) >= 13 {
+			item["change_pct"] = parseFloat(parts[12])
+		}
+		results = append(results, item)
+	}
+	return results, nil
 }
 
 // RandomDelay sleeps for a random duration to avoid rate limiting.

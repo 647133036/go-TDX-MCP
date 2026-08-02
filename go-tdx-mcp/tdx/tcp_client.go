@@ -3,6 +3,9 @@ package tdx
 import (
 	"context"
 	"fmt"
+	"math"
+	"math/rand"
+	"time"
 
 	"github.com/bensema/gotdx"
 	"github.com/bensema/gotdx/proto"
@@ -114,6 +117,34 @@ func (c *TDXTCPClient) Disconnect() error {
 		return fmt.Errorf("disconnect errors: %v", errs)
 	}
 	return nil
+}
+
+// withRetry wraps a function with exponential backoff retry.
+// Only retries transient errors (network/timeout), not data errors.
+func (c *TDXTCPClient) withRetry(fn func() error) error {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			delay := time.Duration(200*math.Pow(2, float64(attempt-1))) * time.Millisecond
+			if delay > 2*time.Second {
+				delay = 2 * time.Second
+			}
+			jitter := time.Duration(float64(delay) * 0.25)
+			if jitter > 0 {
+				delay = delay - jitter + time.Duration(rand.Int63n(int64(2*jitter)))
+			}
+			time.Sleep(delay)
+		}
+		if err := fn(); err != nil {
+			lastErr = err
+			if isDataError(err) {
+				return err
+			}
+			continue
+		}
+		return nil
+	}
+	return fmt.Errorf("failed after 3 retries: %w", lastErr)
 }
 
 // GetQuote fetches real-time quote for a stock.

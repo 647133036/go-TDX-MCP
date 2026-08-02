@@ -203,6 +203,7 @@ func runStreamableHTTP(client *tdx.UnifiedClient, cfg *Config) {
 
 	httpServer := server.NewStreamableHTTPServer(mcpServer,
 		server.WithEndpointPath("/mcp"),
+		server.WithStateLess(true),
 	)
 
 	fmt.Fprintf(os.Stderr, "TDX Finance MCP v1.0.0 (Streamable HTTP): %d 工具 + 45 投资技能\n", toolCount())
@@ -219,6 +220,7 @@ func runCombined(client *tdx.UnifiedClient, cfg *Config) {
 	mcpServer := buildMCPServer(client)
 	httpMCP := server.NewStreamableHTTPServer(mcpServer,
 		server.WithEndpointPath("/mcp"),
+		server.WithStateLess(true),
 	)
 
 	webServer := web.NewServer(client, fmt.Sprintf("0.0.0.0:%d", cfg.WebPort))

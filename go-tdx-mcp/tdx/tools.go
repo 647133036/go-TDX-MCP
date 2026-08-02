@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -166,6 +167,9 @@ func GetHandler(name string) ToolHandler {
 }
 
 func toJSON(v interface{}) string {
+	if v == nil {
+		return "null"
+	}
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fmt.Sprintf("%v", v)
@@ -203,6 +207,9 @@ func HandleQuotes(ctx context.Context, client Client, request mcp.CallToolReques
 	resp, err := client.TQLEXQuery(ctx, "TdxShare.PBHQInfo", reqBody)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("行情查询失败: %v", err)), nil
+	}
+	if resp.Data == nil {
+		return mcp.NewToolResultError("行情查询返回空数据"), nil
 	}
 	return mcp.NewToolResultText(toJSON(resp.Data)), nil
 }
@@ -249,7 +256,85 @@ func HandleKline(ctx context.Context, client Client, request mcp.CallToolRequest
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("K线查询失败: %v", err)), nil
 	}
+	if resp.Data == nil {
+		return mcp.NewToolResultError("K线查询返回空数据"), nil
+	}
+
+	// Serialize resp.Data to []byte regardless of type
+	var raw []byte
+	switch d := resp.Data.(type) {
+	case json.RawMessage:
+		raw = []byte(d)
+	case []byte:
+		raw = d
+	case string:
+		raw = []byte(d)
+	default:
+		marshaled, err := json.Marshal(d)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("序列化K线数据失败: %v", err)), nil
+		}
+		raw = marshaled
+	}
+
+	// TCP format: []map[string]interface{} {Year, Open, High, Low, Close, Volume, Amount}
+	var tcpBars []map[string]interface{}
+	if json.Unmarshal(raw, &tcpBars) == nil && len(tcpBars) > 0 {
+		results := make([]map[string]interface{}, 0, len(tcpBars))
+		for _, bm := range tcpBars {
+			kline := make(map[string]interface{})
+			if yr, ok := bm["Year"]; ok {
+				ymd := toFloat64v(yr)
+				if ymd > 0 {
+					yi := int(ymd)
+					y := yi / 10000
+					m := (yi / 100) % 100
+					d := yi % 100
+					if m > 0 {
+						kline["date"] = fmt.Sprintf("%04d%02d%02d", y, m, d)
+					}
+				}
+			}
+			kline["open"] = toFloat64v(bm["Open"])
+			kline["high"] = toFloat64v(bm["High"])
+			kline["low"] = toFloat64v(bm["Low"])
+			kline["close"] = toFloat64v(bm["Close"])
+			kline["volume"] = toFloat64v(bm["Volume"])
+			kline["amount"] = toFloat64v(bm["Amount"])
+			results = append(results, kline)
+		}
+		return mcp.NewToolResultText(toJSON(results)), nil
+	}
+
+	// HTTP format: return as-is (ListHead/ListItem)
 	return mcp.NewToolResultText(toJSON(resp.Data)), nil
+}
+
+// toFloat64v safely extracts a float64 from various JSON-unmarshaled types (tools.go local copy)
+func toFloat64v(v interface{}) float64 {
+	if v == nil {
+		return 0
+	}
+	switch f := v.(type) {
+	case float64:
+		return f
+	case float32:
+		return float64(f)
+	case int:
+		return float64(f)
+	case int64:
+		return float64(f)
+	case uint64:
+		return float64(f)
+	case uint32:
+		return float64(f)
+	case int32:
+		return float64(f)
+	case string:
+		ff, _ := strconv.ParseFloat(f, 64)
+		return ff
+	}
+	return 0
 }
 
 func HandleLookupStock(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -306,6 +391,9 @@ func HandleScreener(ctx context.Context, client Client, request mcp.CallToolRequ
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("智能选股失败: %v", err)), nil
 	}
+	if resp.Data == nil {
+		return mcp.NewToolResultError("智能选股返回空数据"), nil
+	}
 	return mcp.NewToolResultText(toJSON(resp.Data)), nil
 }
 
@@ -327,6 +415,9 @@ func HandleIndicatorSelect(ctx context.Context, client Client, request mcp.CallT
 	resp, err := client.TQLEXQuery(ctx, "NLPSE:InfoSelectV2", reqBody)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("指标查询失败: %v", err)), nil
+	}
+	if resp.Data == nil {
+		return mcp.NewToolResultError("指标查询返回空数据"), nil
 	}
 	return mcp.NewToolResultText(toJSON(resp.Data)), nil
 }
@@ -356,6 +447,9 @@ func HandleApiData(ctx context.Context, client Client, request mcp.CallToolReque
 	resp, err := client.TQLEXQuery(ctx, entry, reqBody)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("F10查询失败: %v", err)), nil
+	}
+	if resp.Data == nil {
+		return mcp.NewToolResultError("F10查询返回空数据"), nil
 	}
 	return mcp.NewToolResultText(toJSON(resp.Data)), nil
 }

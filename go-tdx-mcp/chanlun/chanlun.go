@@ -257,10 +257,10 @@ func FindFenXing(mergedKlines []Kline) []FenXing {
 		}
 	}
 
-	return filterFenXing(rawFx)
+	return FilterFenXing(rawFx)
 }
 
-func filterFenXing(fx []FenXing) []FenXing {
+func FilterFenXing(fx []FenXing) []FenXing {
 	if len(fx) < 2 {
 		return fx
 	}
@@ -291,7 +291,7 @@ func BuildBi(fenxings []FenXing, mergedKlines []Kline) []Bi {
 		return nil
 	}
 
-	cleanFx := filterFenXing(fenxings)
+	cleanFx := FilterFenXing(fenxings)
 	if len(cleanFx) < 2 {
 		return nil
 	}

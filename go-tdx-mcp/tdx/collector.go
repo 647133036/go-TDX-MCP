@@ -3,6 +3,7 @@ package tdx
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -71,22 +72,24 @@ type MultiHostCollector struct {
 
 // CollectorConfig configures the collector.
 type CollectorConfig struct {
-	HostTimeout     time.Duration // per-host connect timeout, default 6s
-	MaxConnsPerHost int           // connections per host, default 1
-	MaxHosts        int           // max number of hosts to connect, 0 = all
-	RetryCount      int           // retries per request, default 2
-	RetryDelay      time.Duration // delay between retries, default 200ms
-	DetailedBatchSize int         // batch size for detailed quotes, default 20 (32KB limit safe)
+	HostTimeout      time.Duration // per-host connect timeout, default 6s
+	MaxConnsPerHost  int           // connections per host, default 1
+	MaxHosts         int           // max number of hosts to connect, 0 = all
+	RetryCount       int           // retries per request, default 2
+	RetryDelay       time.Duration // initial delay between retries, default 200ms
+	MaxRetryDelay    time.Duration // max delay for exponential backoff, default 2s
+	DetailedBatchSize int          // batch size for detailed quotes, default 20 (32KB limit safe)
 }
 
 // DefaultCollectorConfig returns sensible defaults.
 func DefaultCollectorConfig() CollectorConfig {
 	return CollectorConfig{
-		HostTimeout:      6 * time.Second,
-		MaxConnsPerHost:  1,
-		MaxHosts:         0,
-		RetryCount:       2,
-		RetryDelay:       200 * time.Millisecond,
+		HostTimeout:       6 * time.Second,
+		MaxConnsPerHost:   1,
+		MaxHosts:          0,
+		RetryCount:        2,
+		RetryDelay:        200 * time.Millisecond,
+		MaxRetryDelay:     2 * time.Second,
 		DetailedBatchSize: 20,
 	}
 }
@@ -232,7 +235,21 @@ func (c *MultiHostCollector) do(fn func(gc *gotdx.Client) error) error {
 	var lastErr error
 	for attempt := 0; attempt <= c.cfg.RetryCount; attempt++ {
 		if attempt > 0 {
-			time.Sleep(c.cfg.RetryDelay)
+			// Exponential backoff: baseDelay * 2^(attempt-1), capped at MaxRetryDelay
+			delay := c.cfg.RetryDelay
+			for i := 0; i < attempt-1; i++ {
+				delay *= 2
+				if delay >= c.cfg.MaxRetryDelay {
+					delay = c.cfg.MaxRetryDelay
+					break
+				}
+			}
+			// Add jitter: ±25% randomization
+			jitter := time.Duration(float64(delay) * 0.25)
+			if jitter > 0 {
+				delay = delay - jitter + time.Duration(rand.Int63n(int64(2*jitter)))
+			}
+			time.Sleep(delay)
 		}
 		conn := c.borrow()
 		if conn == nil {
@@ -390,13 +407,13 @@ func (c *MultiHostCollector) CollectDetailedQuotes(codes []string, market int, b
 		})
 		mu.Lock()
 		if err != nil {
-			// Auto-fallback: if batch failed, try with half size
+			// Auto-fallback: if batch failed, halve batch size and retry
 			if currentBatch > 1 && len(batch) > 1 {
 				currentBatch = currentBatch / 2
 				if currentBatch < 1 {
 					currentBatch = 1
 				}
-				i -= batchSize - currentBatch
+				i -= currentBatch
 				mu.Unlock()
 				continue
 			}

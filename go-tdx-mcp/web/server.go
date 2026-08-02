@@ -573,7 +573,7 @@ func (s *Server) fetchKlines(code string, market int, period string, count, fqTy
 				bars := make([]indicator.Bar, 0, len(arrs))
 				for _, row := range arrs {
 					if len(row) >= 6 {
-						bars = append(bars, indicator.Bar{Open: row[0], Close: row[1], High: row[2], Low: row[3], Vol: row[4], Amount: row[5]})
+						bars = append(bars, indicator.Bar{Open: row[0], High: row[1], Low: row[2], Close: row[3], Vol: row[4], Amount: row[5]})
 					}
 				}
 				if len(bars) > 0 {
@@ -596,13 +596,13 @@ func (s *Server) fetchKlines(code string, market int, period string, count, fqTy
 	if klt == "" {
 		klt = "101"
 	}
-	fqParam := "2"
+	fqParam := "1"
 	if fqType == 1 {
 		fqParam = "2"
 	} else if fqType == 2 {
 		fqParam = "3"
 	}
-	url := fmt.Sprintf("https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=%s&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=%s&fqt=%s&beg=0&end=20500000&scf=&count=%d", setcodeStr, klt, fqParam, count)
+	url := fmt.Sprintf("http://push2his.eastmoney.com/api/qt/stock/kline/get?secid=%s&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=%s&fqt=%s&beg=0&end=20500000&scf=&count=%d", setcodeStr, klt, fqParam, count)
 	respHTTP, err := hc.Get(url)
 	if err != nil {
 		return nil, err
@@ -1024,11 +1024,22 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	s.wsHub.add(wsc)
 	defer s.wsHub.remove(wsc)
 
+	// Read goroutine: detect client disconnect
+	go func() {
+		defer close(wsc.stop)
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
 	// Poll real-time quotes every 3 seconds using eastmoney API
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
 	hc := &http.Client{Timeout: 5 * time.Second}
+	defer hc.CloseIdleConnections()
 
 	for {
 		select {
@@ -1054,7 +1065,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			var data interface{}
 			json.NewDecoder(respHTTP.Body).Decode(&data)
 			respHTTP.Body.Close()
-			conn.WriteJSON(data)
+			if err := conn.WriteJSON(data); err != nil {
+				return
+			}
 		}
 	}
 }
@@ -1732,7 +1745,7 @@ func parseKlineBars(data interface{}) ([]indicator.Bar, error) {
 		bars := make([]indicator.Bar, len(arrs))
 		for i, row := range arrs {
 			if len(row) >= 6 {
-				bars[i] = indicator.Bar{Open: row[0], Close: row[1], High: row[2], Low: row[3], Vol: row[4], Amount: row[5]}
+				bars[i] = indicator.Bar{Open: row[0], High: row[1], Low: row[2], Close: row[3], Vol: row[4], Amount: row[5]}
 			}
 		}
 		if len(bars) > 0 {

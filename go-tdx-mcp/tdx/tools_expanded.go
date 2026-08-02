@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -2836,6 +2837,46 @@ func parseKlineBarsToDayBars(data interface{}) ([]offline.DayBar, error) {
 	if err != nil {
 		return nil, err
 	}
+	// TCP format: []map[string]interface{} with Year/Month/Day/Open/High/Low/Close/Volume/Amount
+	var tcpBars []map[string]interface{}
+	if err := json.Unmarshal(raw, &tcpBars); err == nil && len(tcpBars) > 0 {
+		bars := make([]offline.DayBar, len(tcpBars))
+		for i, bm := range tcpBars {
+			var dt string
+			if yr, ok := bm["Year"]; ok {
+				ymd := toFloat64(yr)
+				if ymd > 0 {
+					yi := int(ymd)
+					y := yi / 10000
+					m := (yi / 100) % 100
+					d := yi % 100
+					if m > 0 {
+						dt = fmt.Sprintf("%04d%02d%02d", y, m, d)
+					}
+				}
+			}
+			if dt == "" {
+				if y, ok := bm["Year"]; ok {
+					if mo, ok := bm["Month"]; ok {
+						if dy, ok := bm["Day"]; ok {
+							dt = fmt.Sprintf("%04d%02d%02d", int(toFloat64(y)), int(toFloat64(mo)), int(toFloat64(dy)))
+						}
+					}
+				}
+			}
+			bars[i] = offline.DayBar{
+				Date:   dt,
+				Open:   toFloat64(bm["Open"]),
+				Close:  toFloat64(bm["Close"]),
+				High:   toFloat64(bm["High"]),
+				Low:    toFloat64(bm["Low"]),
+				Vol:    toFloat64(bm["Volume"]),
+				Amount: toFloat64(bm["Amount"]),
+			}
+		}
+		return bars, nil
+	}
+	// HTTP object format
 	type klineObj struct {
 		Date   string  `json:"date"`
 		Time   string  `json:"time"`
@@ -2858,6 +2899,7 @@ func parseKlineBarsToDayBars(data interface{}) ([]offline.DayBar, error) {
 		}
 		return bars, nil
 	}
+	// HTTP raw array format: [][]float64
 	var arrs [][]float64
 	if err := json.Unmarshal(raw, &arrs); err == nil && len(arrs) > 0 {
 		bars := make([]offline.DayBar, len(arrs))
@@ -2868,10 +2910,95 @@ func parseKlineBarsToDayBars(data interface{}) ([]offline.DayBar, error) {
 		}
 		return bars, nil
 	}
+	// HTTP ListHead/ListItem format: {"ListHead":{"ItemHead":[...]},"ListItem":[{"Item":[...]}]}
+	var respMap map[string]interface{}
+	if err := json.Unmarshal(raw, &respMap); err == nil {
+		items, ok := respMap["ListItem"].([]interface{})
+		if !ok || len(items) == 0 {
+			return nil, fmt.Errorf("unsupported kline data format")
+		}
+		bars := make([]offline.DayBar, len(items))
+		for i, item := range items {
+			rowMap, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			fields, ok := rowMap["Item"].([]interface{})
+			if !ok || len(fields) < 6 {
+				continue
+			}
+			// Item order: Data(0), Second(1), Open(2), High(3), Low(4), Close(5), Amount(6), VolInStock(7), Volume(8), ...
+			var dateStr string
+			if v, ok := fields[0].(string); ok {
+				dateStr = v
+			} else {
+				dateStr = fmt.Sprintf("%.0f", toFloat64(fields[0]))
+			}
+			bars[i] = offline.DayBar{
+				Date:   dateStr,
+				Open:   toFloat64(fields[2]),
+				High:   toFloat64(fields[3]),
+				Low:    toFloat64(fields[4]),
+				Close:  toFloat64(fields[5]),
+				Vol:    toFloat64(fields[8]),
+				Amount: toFloat64(fields[6]),
+			}
+		}
+		return bars, nil
+	}
 	return nil, fmt.Errorf("unsupported kline data format")
 }
 
 // --- Data Parsing Helpers ---
+
+// toFloat64 safely extracts a float64 from various JSON-unmarshaled types
+func toFloat64(v interface{}) float64 {
+	if v == nil {
+		return 0
+	}
+	switch f := v.(type) {
+	case float64:
+		return f
+	case float32:
+		return float64(f)
+	case int:
+		return float64(f)
+	case int64:
+		return float64(f)
+	case uint64:
+		return float64(f)
+	case uint32:
+		return float64(f)
+	case int32:
+		return float64(f)
+	case string:
+		ff, _ := strconv.ParseFloat(f, 64)
+		return ff
+	}
+	return 0
+}
+
+// parseTCPBars parses TCP SecurityBar format: [{Year, Month, Day, Open, High, Low, Close, Volume, Amount}, ...]
+// into []indicator.Bar (no Date field in indicator.Bar)
+func parseTCPBars(raw []byte) ([]indicator.Bar, error) {
+	var tcpBars []map[string]interface{}
+	if err := json.Unmarshal(raw, &tcpBars); err != nil {
+		return nil, err
+	}
+	if len(tcpBars) == 0 {
+		return nil, fmt.Errorf("empty TCP bars")
+	}
+	bars := make([]indicator.Bar, len(tcpBars))
+	for i, bm := range tcpBars {
+		bars[i].Open = toFloat64(bm["Open"])
+		bars[i].High = toFloat64(bm["High"])
+		bars[i].Low = toFloat64(bm["Low"])
+		bars[i].Close = toFloat64(bm["Close"])
+		bars[i].Vol = toFloat64(bm["Volume"])
+		bars[i].Amount = toFloat64(bm["Amount"])
+	}
+	return bars, nil
+}
 
 // parseKlineBars extracts indicator.Bar slice from TQLEX K-line response data.
 func parseKlineBars(data interface{}) ([]indicator.Bar, error) {
@@ -2879,6 +3006,12 @@ func parseKlineBars(data interface{}) ([]indicator.Bar, error) {
 	if err != nil {
 		return nil, err
 	}
+	// TCP format: []map[string]interface{} with Year/Month/Day/Open/High/Low/Close/Volume/Amount
+	bars, err := parseTCPBars(raw)
+	if err == nil && len(bars) > 0 {
+		return bars, nil
+	}
+	// HTTP object format: []{open, close, high, low, vol, amount}
 	type klineObj struct {
 		Open   float64 `json:"open"`
 		Close  float64 `json:"close"`
@@ -2895,6 +3028,7 @@ func parseKlineBars(data interface{}) ([]indicator.Bar, error) {
 		}
 		return bars, nil
 	}
+	// HTTP raw array format: [][]float64
 	var arrs [][]float64
 	if err := json.Unmarshal(raw, &arrs); err == nil && len(arrs) > 0 {
 		bars := make([]indicator.Bar, len(arrs))
@@ -2908,6 +3042,33 @@ func parseKlineBars(data interface{}) ([]indicator.Bar, error) {
 		}
 		return bars, nil
 	}
+	// HTTP ListHead/ListItem format: {"ListHead":{"ItemHead":[...]},"ListItem":[{"Item":[...]}]}
+	var respMap map[string]interface{}
+	if err := json.Unmarshal(raw, &respMap); err == nil {
+		items, ok := respMap["ListItem"].([]interface{})
+		if !ok || len(items) == 0 {
+			return nil, fmt.Errorf("unsupported kline data format for indicator parsing")
+		}
+		bars := make([]indicator.Bar, len(items))
+		for i, item := range items {
+			rowMap, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			fields, ok := rowMap["Item"].([]interface{})
+			if !ok || len(fields) < 6 {
+				continue
+			}
+			// Item order: Data(0), Second(1), Open(2), High(3), Low(4), Close(5), Amount(6), VolInStock(7), Volume(8), ...
+			bars[i].Open = toFloat64(fields[2])
+			bars[i].High = toFloat64(fields[3])
+			bars[i].Low = toFloat64(fields[4])
+			bars[i].Close = toFloat64(fields[5])
+			bars[i].Amount = toFloat64(fields[6])
+			bars[i].Vol = toFloat64(fields[8])
+		}
+		return bars, nil
+	}
 	return nil, fmt.Errorf("unsupported kline data format for indicator parsing")
 }
 
@@ -2917,6 +3078,46 @@ func parseChanlunKlines(data interface{}) ([]chanlun.Kline, error) {
 	if err != nil {
 		return nil, err
 	}
+	// TCP format: []map[string]interface{} with Year/Month/Day/Open/High/Low/Close/Volume/Amount
+	var tcpBars []map[string]interface{}
+	if err := json.Unmarshal(raw, &tcpBars); err == nil && len(tcpBars) > 0 {
+		klines := make([]chanlun.Kline, len(tcpBars))
+		for i, bm := range tcpBars {
+			var dt string
+			if yr, ok := bm["Year"]; ok {
+				ymd := toFloat64(yr)
+				if ymd > 0 {
+					yi := int(ymd)
+					y := yi / 10000
+					m := (yi / 100) % 100
+					d := yi % 100
+					if m > 0 {
+						dt = fmt.Sprintf("%04d%02d%02d", y, m, d)
+					}
+				}
+			}
+			if dt == "" {
+				if y, ok := bm["Year"]; ok {
+					if mo, ok := bm["Month"]; ok {
+						if dy, ok := bm["Day"]; ok {
+							dt = fmt.Sprintf("%04d%02d%02d", int(toFloat64(y)), int(toFloat64(mo)), int(toFloat64(dy)))
+						}
+					}
+				}
+			}
+			klines[i] = chanlun.Kline{
+				Date:   dt,
+				Open:   toFloat64(bm["Open"]),
+				High:   toFloat64(bm["High"]),
+				Low:    toFloat64(bm["Low"]),
+				Close:  toFloat64(bm["Close"]),
+				Vol:    toFloat64(bm["Volume"]),
+				Amount: toFloat64(bm["Amount"]),
+			}
+		}
+		return klines, nil
+	}
+	// HTTP object format: []{date, time, open, close, high, low, vol, amount}
 	type klineObj struct {
 		Date   string  `json:"date"`
 		Time   string  `json:"time"`
@@ -2936,6 +3137,41 @@ func parseChanlunKlines(data interface{}) ([]chanlun.Kline, error) {
 				dt = o.Time
 			}
 			klines[i] = chanlun.Kline{Date: dt, Open: o.Open, Close: o.Close, High: o.High, Low: o.Low, Vol: o.Vol, Amount: o.Amount}
+		}
+		return klines, nil
+	}
+	// HTTP ListHead/ListItem format
+	var respMap map[string]interface{}
+	if err := json.Unmarshal(raw, &respMap); err == nil {
+		items, ok := respMap["ListItem"].([]interface{})
+		if !ok || len(items) == 0 {
+			return nil, fmt.Errorf("unsupported kline data format for chanlun parsing")
+		}
+		klines := make([]chanlun.Kline, len(items))
+		for i, item := range items {
+			rowMap, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			fields, ok := rowMap["Item"].([]interface{})
+			if !ok || len(fields) < 6 {
+				continue
+			}
+			var dateStr string
+			if v, ok := fields[0].(string); ok {
+				dateStr = v
+			} else {
+				dateStr = fmt.Sprintf("%.0f", toFloat64(fields[0]))
+			}
+			klines[i] = chanlun.Kline{
+				Date:   dateStr,
+				Open:   toFloat64(fields[2]),
+				High:   toFloat64(fields[3]),
+				Low:    toFloat64(fields[4]),
+				Close:  toFloat64(fields[5]),
+				Vol:    toFloat64(fields[8]),
+				Amount: toFloat64(fields[6]),
+			}
 		}
 		return klines, nil
 	}
