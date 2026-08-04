@@ -324,7 +324,7 @@ a{color:#1a73e8}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]string{"status": "ok", "version": "1.0.0"})
+	writeJSON(w, map[string]string{"status": "ok", "version": "1.0.2"})
 }
 
 func (s *Server) handleQuotes(w http.ResponseWriter, r *http.Request) {
@@ -418,28 +418,7 @@ func (s *Server) handleBars(w http.ResponseWriter, r *http.Request) {
 }
 
 func klinePeriodToCode(period string) int {
-	switch period {
-	case "1min":
-		return 1
-	case "5min":
-		return 2
-	case "15min":
-		return 3
-	case "30min":
-		return 4
-	case "60min":
-		return 5
-	case "week":
-		return 6
-	case "month":
-		return 7
-	case "quarter":
-		return 8
-	case "year":
-		return 9
-	default:
-		return 0
-	}
+	return tdx.PeriodToCode(period)
 }
 
 func (s *Server) fetchKlinesFromOffline(code string, market int, period string, count int) ([]indicator.Bar, error) {
@@ -567,18 +546,11 @@ func (s *Server) fetchKlines(code string, market int, period string, count, fqTy
 		}
 		resp, err := s.client.TQLEXQuery(context.Background(), "TdxShare.PBFXT", body)
 		if err == nil && resp != nil && resp.Data != nil {
-			dataBytes, _ := json.Marshal(resp.Data)
-			var arrs [][]float64
-			if err := json.Unmarshal(dataBytes, &arrs); err == nil && len(arrs) > 0 {
-				bars := make([]indicator.Bar, 0, len(arrs))
-				for _, row := range arrs {
-					if len(row) >= 6 {
-						bars = append(bars, indicator.Bar{Open: row[0], High: row[1], Low: row[2], Close: row[3], Vol: row[4], Amount: row[5]})
-					}
+			if bars, perr := parseKlineBars(resp.Data); perr == nil && len(bars) > 0 {
+				if len(bars) > count {
+					bars = bars[len(bars)-count:]
 				}
-				if len(bars) > 0 {
-					return bars, nil
-				}
+				return bars, nil
 			}
 		}
 	}
@@ -1249,7 +1221,7 @@ func (s *Server) handleMarketStat(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 	// TDX PBServerInfo returns 503 — return static server info
 	writeJSON(w, map[string]interface{}{
-		"version":   "1.0.0",
+		"version":   "1.0.2",
 		"timestamp": time.Now().Format(time.RFC3339),
 		"data_sources": []string{"TDX TCP", "EastMoney API", "Sina Finance"},
 		"status":      "running",
@@ -1797,13 +1769,13 @@ func parseEastMoneyKlines(klines []string) ([]indicator.Bar, error) {
 func extractBarsFromListItem(listItem []struct{ Item []interface{} }) ([]indicator.Bar, error) {
 	var bars []indicator.Bar
 	for _, li := range listItem {
-		if len(li.Item) < 6 {
+		if len(li.Item) < 9 {
 			continue
 		}
 		b := indicator.Bar{
-			Open: toFloat64(li.Item[2]), Close: toFloat64(li.Item[3]),
-			High: toFloat64(li.Item[4]), Low: toFloat64(li.Item[5]),
-			Vol: toFloat64(li.Item[6]), Amount: toFloat64(li.Item[7]),
+			Open: toFloat64(li.Item[2]), High: toFloat64(li.Item[3]),
+			Low: toFloat64(li.Item[4]), Close: toFloat64(li.Item[5]),
+			Amount: toFloat64(li.Item[6]), Vol: toFloat64(li.Item[8]),
 		}
 		bars = append(bars, b)
 	}
@@ -1857,11 +1829,11 @@ func parseChanlunKlines(data interface{}) ([]chanlun.Kline, error) {
 	if err := json.Unmarshal(raw, &arrItems); err == nil && len(arrItems) > 0 {
 		klines := make([]chanlun.Kline, len(arrItems))
 		for i, item := range arrItems {
-			if len(item) < 8 {
+			if len(item) < 9 {
 				continue
 			}
 			date := fmt.Sprintf("%v", item[0])
-			klines[i] = chanlun.Kline{Date: date, Open: toFloat64(item[2]), Close: toFloat64(item[3]), High: toFloat64(item[4]), Low: toFloat64(item[5]), Vol: toFloat64(item[6]), Amount: toFloat64(item[7])}
+			klines[i] = chanlun.Kline{Date: date, Open: toFloat64(item[2]), High: toFloat64(item[3]), Low: toFloat64(item[4]), Close: toFloat64(item[5]), Amount: toFloat64(item[6]), Vol: toFloat64(item[8])}
 		}
 		if len(klines) > 0 {
 			return klines, nil
@@ -1892,11 +1864,11 @@ func parseChanlunKlines(data interface{}) ([]chanlun.Kline, error) {
 func extractKlinesFromListItem(listItem []struct{ Item []interface{} }) ([]chanlun.Kline, error) {
 	var allKlines []chanlun.Kline
 	for _, li := range listItem {
-		if len(li.Item) < 8 {
+		if len(li.Item) < 9 {
 			continue
 		}
 		date := fmt.Sprintf("%v", li.Item[0])
-		k := chanlun.Kline{Date: date, Open: toFloat64(li.Item[2]), Close: toFloat64(li.Item[3]), High: toFloat64(li.Item[4]), Low: toFloat64(li.Item[5]), Vol: toFloat64(li.Item[6]), Amount: toFloat64(li.Item[7])}
+		k := chanlun.Kline{Date: date, Open: toFloat64(li.Item[2]), High: toFloat64(li.Item[3]), Low: toFloat64(li.Item[4]), Close: toFloat64(li.Item[5]), Amount: toFloat64(li.Item[6]), Vol: toFloat64(li.Item[8])}
 		allKlines = append(allKlines, k)
 	}
 	if len(allKlines) > 0 {

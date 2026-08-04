@@ -686,25 +686,28 @@ func parseBarsFromResponse(resp *TQLEXResponse) ([]indicator.Bar, error) {
 		if !ok || len(items) == 0 {
 			return nil, fmt.Errorf("parseBarsFromResponse: unsupported format")
 		}
-		bars := make([]indicator.Bar, len(items))
-		for i, item := range items {
+		bars := make([]indicator.Bar, 0, len(items))
+		for _, item := range items {
 			rowMap, ok := item.(map[string]interface{})
 			if !ok {
 				continue
 			}
 			fields, ok := rowMap["Item"].([]interface{})
-			if !ok || len(fields) < 6 {
+			if !ok || len(fields) < 9 {
 				continue
 			}
 			// Item order: Data(0), Second(1), Open(2), High(3), Low(4), Close(5), Amount(6), VolInStock(7), Volume(8), ...
-			bars[i] = indicator.Bar{
+			bars = append(bars, indicator.Bar{
 				Open:   toFloat64(fields[2]),
 				High:   toFloat64(fields[3]),
 				Low:    toFloat64(fields[4]),
 				Close:  toFloat64(fields[5]),
 				Vol:    toFloat64(fields[8]),
 				Amount: toFloat64(fields[6]),
-			}
+			})
+		}
+		if len(bars) == 0 {
+			return nil, fmt.Errorf("parseBarsFromResponse: unsupported format")
 		}
 		return bars, nil
 	}

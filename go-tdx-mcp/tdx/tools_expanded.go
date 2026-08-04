@@ -2917,14 +2917,14 @@ func parseKlineBarsToDayBars(data interface{}) ([]offline.DayBar, error) {
 		if !ok || len(items) == 0 {
 			return nil, fmt.Errorf("unsupported kline data format")
 		}
-		bars := make([]offline.DayBar, len(items))
-		for i, item := range items {
+		bars := make([]offline.DayBar, 0, len(items))
+		for _, item := range items {
 			rowMap, ok := item.(map[string]interface{})
 			if !ok {
 				continue
 			}
 			fields, ok := rowMap["Item"].([]interface{})
-			if !ok || len(fields) < 6 {
+			if !ok || len(fields) < 9 {
 				continue
 			}
 			// Item order: Data(0), Second(1), Open(2), High(3), Low(4), Close(5), Amount(6), VolInStock(7), Volume(8), ...
@@ -2934,7 +2934,7 @@ func parseKlineBarsToDayBars(data interface{}) ([]offline.DayBar, error) {
 			} else {
 				dateStr = fmt.Sprintf("%.0f", toFloat64(fields[0]))
 			}
-			bars[i] = offline.DayBar{
+			bars = append(bars, offline.DayBar{
 				Date:   dateStr,
 				Open:   toFloat64(fields[2]),
 				High:   toFloat64(fields[3]),
@@ -2942,7 +2942,10 @@ func parseKlineBarsToDayBars(data interface{}) ([]offline.DayBar, error) {
 				Close:  toFloat64(fields[5]),
 				Vol:    toFloat64(fields[8]),
 				Amount: toFloat64(fields[6]),
-			}
+			})
+		}
+		if len(bars) == 0 {
+			return nil, fmt.Errorf("unsupported kline data format")
 		}
 		return bars, nil
 	}
@@ -3049,23 +3052,25 @@ func parseKlineBars(data interface{}) ([]indicator.Bar, error) {
 		if !ok || len(items) == 0 {
 			return nil, fmt.Errorf("unsupported kline data format for indicator parsing")
 		}
-		bars := make([]indicator.Bar, len(items))
-		for i, item := range items {
+		bars := make([]indicator.Bar, 0, len(items))
+		for _, item := range items {
 			rowMap, ok := item.(map[string]interface{})
 			if !ok {
 				continue
 			}
 			fields, ok := rowMap["Item"].([]interface{})
-			if !ok || len(fields) < 6 {
+			if !ok || len(fields) < 9 {
 				continue
 			}
 			// Item order: Data(0), Second(1), Open(2), High(3), Low(4), Close(5), Amount(6), VolInStock(7), Volume(8), ...
-			bars[i].Open = toFloat64(fields[2])
-			bars[i].High = toFloat64(fields[3])
-			bars[i].Low = toFloat64(fields[4])
-			bars[i].Close = toFloat64(fields[5])
-			bars[i].Amount = toFloat64(fields[6])
-			bars[i].Vol = toFloat64(fields[8])
+			bars = append(bars, indicator.Bar{
+				Open: toFloat64(fields[2]), High: toFloat64(fields[3]),
+				Low: toFloat64(fields[4]), Close: toFloat64(fields[5]),
+				Amount: toFloat64(fields[6]), Vol: toFloat64(fields[8]),
+			})
+		}
+		if len(bars) == 0 {
+			return nil, fmt.Errorf("unsupported kline data format for indicator parsing")
 		}
 		return bars, nil
 	}
@@ -3147,14 +3152,14 @@ func parseChanlunKlines(data interface{}) ([]chanlun.Kline, error) {
 		if !ok || len(items) == 0 {
 			return nil, fmt.Errorf("unsupported kline data format for chanlun parsing")
 		}
-		klines := make([]chanlun.Kline, len(items))
-		for i, item := range items {
+		klines := make([]chanlun.Kline, 0, len(items))
+		for _, item := range items {
 			rowMap, ok := item.(map[string]interface{})
 			if !ok {
 				continue
 			}
 			fields, ok := rowMap["Item"].([]interface{})
-			if !ok || len(fields) < 6 {
+			if !ok || len(fields) < 9 {
 				continue
 			}
 			var dateStr string
@@ -3163,7 +3168,7 @@ func parseChanlunKlines(data interface{}) ([]chanlun.Kline, error) {
 			} else {
 				dateStr = fmt.Sprintf("%.0f", toFloat64(fields[0]))
 			}
-			klines[i] = chanlun.Kline{
+			klines = append(klines, chanlun.Kline{
 				Date:   dateStr,
 				Open:   toFloat64(fields[2]),
 				High:   toFloat64(fields[3]),
@@ -3171,7 +3176,10 @@ func parseChanlunKlines(data interface{}) ([]chanlun.Kline, error) {
 				Close:  toFloat64(fields[5]),
 				Vol:    toFloat64(fields[8]),
 				Amount: toFloat64(fields[6]),
-			}
+			})
+		}
+		if len(klines) == 0 {
+			return nil, fmt.Errorf("unsupported kline data format for chanlun parsing")
 		}
 		return klines, nil
 	}

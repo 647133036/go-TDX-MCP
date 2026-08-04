@@ -190,21 +190,21 @@ func (m *MacroScraper) GetPMI(count int) ([]MacroIndicator, error) {
 	return results, nil
 }
 
-// GetMoneySupply fetches China M2 money supply data.
+// GetMoneySupply fetches China M2 (广义货币供应量) data.
 func (m *MacroScraper) GetMoneySupply(count int) ([]MacroIndicator, error) {
-	data, err := m.fetchEastMoney("RPT_ECONOMY_CURRENCY_SUPPLY", "REPORT_DATE,BASIC_CURRENCY,M1,M2", count)
+	data, err := m.fetchEastMoney("RPT_ECONOMY_CURRENCY_SUPPLY", "REPORT_DATE,BASIC_CURRENCY,CURRENCY,FREE_CASH", count)
 	if err != nil {
 		return nil, err
 	}
 
 	results := make([]MacroIndicator, 0, len(data))
 	for _, d := range data {
-		val := getFloat(d, "M2")
+		val := getFloat(d, "BASIC_CURRENCY")
 		results = append(results, MacroIndicator{
 			Date:      getString(d, "REPORT_DATE"),
 			Value:     val,
 			Indicator: "M2",
-			Unit:      "万亿元",
+			Unit:      "亿元",
 		})
 	}
 	return results, nil
