@@ -18,6 +18,7 @@ import (
 	"github.com/tdx/go-tdx-mcp/chanlun"
 	"github.com/tdx/go-tdx-mcp/finance"
 	"github.com/tdx/go-tdx-mcp/indicator"
+	"github.com/tdx/go-tdx-mcp/formula"
 	"github.com/tdx/go-tdx-mcp/offline"
 	"github.com/tdx/go-tdx-mcp/scraper"
 	"github.com/tdx/go-tdx-mcp/tdx"
@@ -150,6 +151,10 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/offline/home", s.handleOfflineHome)
 	s.mux.HandleFunc("/api/v1/offline/ex-files", s.handleOfflineExFiles)
 	s.mux.HandleFunc("/api/v1/offline/ex-daily", s.handleOfflineExDaily)
+	// Formula engine
+	s.mux.HandleFunc("/api/v1/formula/parse", s.handleFormulaParse)
+	s.mux.HandleFunc("/api/v1/formula/execute", s.handleFormulaExecute)
+	s.mux.HandleFunc("/api/v1/formula/functions", s.handleFormulaFunctions)
 	// WebSocket real-time feed
 	s.mux.HandleFunc("/ws/realtime/", s.handleWebSocket)
 }
@@ -1899,6 +1904,94 @@ func parseEastMoneyChanlunKlines(klines []string) ([]chanlun.Kline, error) {
 		return allKlines, nil
 	}
 	return nil, fmt.Errorf("no valid kline data parsed")
+}
+
+// --- Formula Engine Handlers ---
+
+func (s *Server) handleFormulaParse(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Formula string `json:"formula"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "无效的请求体: "+err.Error())
+		return
+	}
+	if req.Formula == "" {
+		writeError(w, 400, "formula 参数必填")
+		return
+	}
+	eng := formula.NewEngine()
+	result, err := eng.Parse(req.Formula)
+	if err != nil {
+		writeError(w, 400, fmt.Sprintf("公式解析失败: %v", err))
+		return
+	}
+	writeJSON(w, map[string]interface{}{
+		"type":     result.Type,
+		"outputs":  result.Outputs,
+		"drawings": result.Drawings,
+	})
+}
+
+func (s *Server) handleFormulaExecute(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Formula string `json:"formula"`
+		Code    string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "无效的请求体: "+err.Error())
+		return
+	}
+	if req.Formula == "" || req.Code == "" {
+		writeError(w, 400, "formula 和 code 参数必填")
+		return
+	}
+
+	// Optional params from query string
+	code := req.Code
+	market := queryInt(r, "market", 0)
+	period := r.URL.Query().Get("period")
+	if period == "" {
+		period = "day"
+	}
+	count := queryInt(r, "count", 200)
+	fqType := queryInt(r, "fq_type", 3)
+
+	bars, err := s.fetchKlines(code, market, period, count, fqType)
+	if err != nil {
+		writeError(w, 500, fmt.Sprintf("获取K线失败: %v", err))
+		return
+	}
+	if len(bars) == 0 {
+		writeError(w, 500, "K线数据为空")
+		return
+	}
+
+	eng := formula.NewEngine()
+	execResult, err := eng.Execute(req.Formula, bars)
+	if err != nil {
+		writeError(w, 500, fmt.Sprintf("公式执行失败: %v", err))
+		return
+	}
+	writeJSON(w, map[string]interface{}{
+		"code":          code,
+		"type":          execResult.Type,
+		"outputs":       execResult.Outputs,
+		"trade_signals": execResult.TradeSignals,
+		"bkcolor":       execResult.BKColor,
+		"drawings":      execResult.Drawings,
+		"nan_counts":    execResult.NanCounts,
+		"bars_count":    len(bars),
+	})
+}
+
+func (s *Server) handleFormulaFunctions(w http.ResponseWriter, r *http.Request) {
+	eng := formula.NewEngine()
+	funcs := eng.ListFunctions()
+	writeJSON(w, map[string]interface{}{
+		"total":     len(funcs),
+		"functions": funcs,
+	})
 }
 
 func toFloat64(v interface{}) float64 {

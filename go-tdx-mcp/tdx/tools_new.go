@@ -12,6 +12,7 @@ import (
 	"github.com/tdx/go-tdx-mcp/backtest"
 	"github.com/tdx/go-tdx-mcp/chanlun"
 	"github.com/tdx/go-tdx-mcp/factor"
+	"github.com/tdx/go-tdx-mcp/formula"
 	"github.com/tdx/go-tdx-mcp/indicator"
 	"github.com/tdx/go-tdx-mcp/scraper"
 	"github.com/tdx/go-tdx-mcp/screen"
@@ -159,6 +160,10 @@ const (
 	ToolSectorRotation            = "tdx_sector_rotation"
 	ToolMarketBreadth             = "tdx_market_breadth"
 	ToolVolumePriceAnalysis       = "tdx_volume_price_analysis"
+	// Formula engine tools
+	ToolFormulaParse   = "tdx_formula_parse"
+	ToolFormulaExecute = "tdx_formula_execute"
+	ToolFormulaList    = "tdx_formula_list"
 )
 
 func NewFactorListTool() mcp.Tool {
@@ -552,6 +557,9 @@ func GetAllNewTools() []mcp.Tool {
 		NewSectorRotationTool(),
 		NewMarketBreadthTool(),
 		NewVolumePriceAnalysisTool(),
+		NewFormulaParseTool(),
+		NewFormulaExecuteTool(),
+		NewFormulaListTool(),
 	}
 }
 
@@ -833,6 +841,12 @@ func GetNewHandler(name string) ToolHandler {
 		return HandleMarketBreadth
 	case ToolVolumePriceAnalysis:
 		return HandleVolumePriceAnalysis
+	case ToolFormulaParse:
+		return HandleFormulaParse
+	case ToolFormulaExecute:
+		return HandleFormulaExecute
+	case ToolFormulaList:
+		return HandleFormulaList
 	default:
 		return nil
 	}
@@ -6352,5 +6366,143 @@ func HandleVolumePriceAnalysis(ctx context.Context, client Client, request mcp.C
 		"date":  date,
 		"limit": limit,
 		"message": "量价分析数据通过东方财富行情数据获取",
+	})), nil
+}
+
+// --- Formula Engine Tools ---
+
+func NewFormulaParseTool() mcp.Tool {
+	return mcp.NewTool(ToolFormulaParse,
+		mcp.WithDescription("解析通达信公式源码，返回 AST 结构、输出线列表和绘图调用信息"),
+		mcp.WithString("formula",
+			mcp.Required(),
+			mcp.Description("通达信公式源码"),
+		),
+	)
+}
+
+func NewFormulaExecuteTool() mcp.Tool {
+	return mcp.NewTool(ToolFormulaExecute,
+		mcp.WithDescription("执行通达信公式，返回各输出序列、交易信号、BKCOLOR、绘图事件和 NaN 统计"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("证券代码，如 '000001'"),
+		),
+		mcp.WithString("formula",
+			mcp.Required(),
+			mcp.Description("通达信公式源码"),
+		),
+		mcp.WithNumber("market",
+			mcp.Description("市场代码，0=深圳 1=上海（默认 0）"),
+		),
+		mcp.WithString("period",
+			mcp.Description("周期：day/week/month/60min/1min/5min/15min/30min（默认 day）"),
+		),
+		mcp.WithNumber("count",
+			mcp.Description("K 线数量（默认 200）"),
+		),
+		mcp.WithNumber("adjustflag",
+			mcp.Description("复权类型：0=不复权 1=前复权 2=后复权 3=定点复权（默认 3）"),
+		),
+	)
+}
+
+func NewFormulaListTool() mcp.Tool {
+	return mcp.NewTool(ToolFormulaList,
+		mcp.WithDescription("列出通达信公式引擎支持的所有内置函数（含类别、参数说明）"),
+	)
+}
+
+type klineQueryClient interface {
+	KlineQuery(ctx context.Context, code string, market int, period string, count, fq int) ([]indicator.Bar, error)
+}
+
+func HandleFormulaParse(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	formulaCode, err := request.RequireString("formula")
+	if err != nil {
+		return mcp.NewToolResultError("formula 参数必填"), nil
+	}
+
+	eng := formula.NewEngine()
+	result, err := eng.Parse(formulaCode)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("公式解析失败: %v", err)), nil
+	}
+
+	return mcp.NewToolResultText(toJSON(map[string]interface{}{
+		"type":     result.Type,
+		"outputs":  result.Outputs,
+		"drawings": result.Drawings,
+	})), nil
+}
+
+func HandleFormulaExecute(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	formulaCode, err := request.RequireString("formula")
+	if err != nil {
+		return mcp.NewToolResultError("formula 参数必填"), nil
+	}
+	code, err := request.RequireString("code")
+	if err != nil {
+		return mcp.NewToolResultError("code 参数必填"), nil
+	}
+
+	market := 0.0
+	if v, ok := request.GetArguments()["market"].(float64); ok {
+		market = v
+	}
+	period := "day"
+	if p, ok := request.GetArguments()["period"].(string); ok {
+		period = p
+	}
+	count := 200
+	if v, ok := request.GetArguments()["count"].(float64); ok {
+		count = int(v)
+	}
+	adjust := 3
+	if v, ok := request.GetArguments()["adjustflag"].(float64); ok {
+		adjust = int(v)
+	}
+
+	kc, ok := client.(klineQueryClient)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持K线查询"), nil
+	}
+	bars, err := kc.KlineQuery(ctx, code, int(market), period, count, adjust)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("获取K线失败: %v", err)), nil
+	}
+
+	indicatorBars := make([]indicator.Bar, len(bars))
+	for i, b := range bars {
+		indicatorBars[i] = indicator.Bar{
+			Open: b.Open, High: b.High, Low: b.Low, Close: b.Close,
+			Vol: b.Vol, Amount: b.Amount,
+		}
+	}
+
+	eng := formula.NewEngine()
+	execResult, err := eng.Execute(formulaCode, indicatorBars)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("公式执行失败: %v", err)), nil
+	}
+
+	return mcp.NewToolResultText(toJSON(map[string]interface{}{
+		"code":          code,
+		"type":          execResult.Type,
+		"outputs":       execResult.Outputs,
+		"trade_signals": execResult.TradeSignals,
+		"bkcolor":       execResult.BKColor,
+		"drawings":      execResult.Drawings,
+		"nan_counts":    execResult.NanCounts,
+		"bars_count":    len(bars),
+	})), nil
+}
+
+func HandleFormulaList(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	eng := formula.NewEngine()
+	funcs := eng.ListFunctions()
+	return mcp.NewToolResultText(toJSON(map[string]interface{}{
+		"total":   len(funcs),
+		"functions": funcs,
 	})), nil
 }
