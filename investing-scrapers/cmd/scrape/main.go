@@ -128,6 +128,48 @@ func main() {
 		data, _ := json.MarshalIndent(quotes, "", "  ")
 		fmt.Println(string(data))
 
+	case "calendar":
+		s := scraper.NewEconomicCalendarScraper()
+		if s == nil {
+			fmt.Fprintln(os.Stderr, "Failed to create scraper")
+			os.Exit(1)
+		}
+		resp, err := s.FetchAll()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		data, _ := json.MarshalIndent(resp, "", "  ")
+		fmt.Println(string(data))
+
+	case "calendar-published":
+		s := scraper.NewEconomicCalendarScraper()
+		if s == nil {
+			fmt.Fprintln(os.Stderr, "Failed to create scraper")
+			os.Exit(1)
+		}
+		resp, err := s.FetchPublished()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		data, _ := json.MarshalIndent(resp, "", "  ")
+		fmt.Println(string(data))
+
+	case "calendar-upcoming":
+		s := scraper.NewEconomicCalendarScraper()
+		if s == nil {
+			fmt.Fprintln(os.Stderr, "Failed to create scraper")
+			os.Exit(1)
+		}
+		resp, err := s.FetchUpcoming()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		data, _ := json.MarshalIndent(resp, "", "  ")
+		fmt.Println(string(data))
+
 	case "crypto":
 		s := scraper.NewCryptoScraper()
 		if s == nil {
@@ -144,7 +186,7 @@ func main() {
 
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", *command)
-		fmt.Fprintf(os.Stderr, "Usage: %s -cmd=[currencies|commodities|commodity-quote|indices|search|funds|crypto] [-q=query] [-name=slug]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s -cmd=[currencies|commodities|commodity-quote|index-quote|indices|search|funds|crypto|calendar|calendar-published|calendar-upcoming] [-q=query] [-name=slug]\n", os.Args[0])
 		os.Exit(1)
 	}
 }
