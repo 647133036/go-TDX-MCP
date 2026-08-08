@@ -401,14 +401,15 @@ func TestFnArgCountErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("MA with 1 arg should error")
 	}
-	_, err = callFn(t, "MA", seq(1, 2, 3), num(3), num(2))
+	v, err := callFn(t, "MA", seq(1, 2, 3), num(3), num(2))
 	if err == nil {
 		t.Fatal("MA with 3 args should error")
 	}
-	_, err = callFn(t, "CROSS", seq(1, 2), num(2))
-	if err == nil {
-		t.Fatal("CROSS with scalar should error")
+	v, err = callFn(t, "CROSS", seq(1, 2), num(2))
+	if err != nil {
+		t.Fatalf("CROSS with scalar should broadcast: %v", err)
 	}
+	assertValue(t, v, "CROSS", 0, 0)
 	_, err = callFn(t, "MA", seq(1, 2, 3), num(0))
 	if err == nil {
 		t.Fatal("MA with period 0 should error")

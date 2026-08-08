@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/bensema/gotdx"
@@ -22,6 +23,8 @@ type TDXTCPClient struct {
 	macAddr     string
 	customHost  string
 	customPort  int
+	macOnce     sync.Once
+	macErr      error
 }
 
 // NewTDXTCPClient creates a new TDX TCP client with auto-select of fastest hosts.
@@ -30,6 +33,8 @@ func NewTDXTCPClient(timeoutSec int) *TDXTCPClient {
 }
 
 // NewTDXTCPClientWithHost creates a TCP client with a custom host and port.
+// When a custom host is provided, auto-select is disabled to avoid server bugs
+// where the chosen server panics on StockKLineOffset (slice bounds).
 func NewTDXTCPClientWithHost(timeoutSec int, host string, port int) *TDXTCPClient {
 	return newTDXTCPClientWithOptions(timeoutSec, host, port)
 }
@@ -38,8 +43,14 @@ func newTDXTCPClientWithOptions(timeoutSec int, customHost string, customPort in
 	if timeoutSec <= 0 {
 		timeoutSec = 6
 	}
+
+	// When a custom host is specified, disable auto-select to avoid
+	// gotdx.Client switching servers during StockKLineOffset which causes
+	// broken pipe errors (especially under high request volume).
+	useAutoSelect := customHost == "" || customPort <= 0
+
 	baseOpts := []gotdx.Option{
-		gotdx.WithAutoSelectFastest(true),
+		gotdx.WithAutoSelectFastest(useAutoSelect),
 		gotdx.WithTimeoutSec(timeoutSec),
 	}
 	var mainOpts, exOpts, macOpts []gotdx.Option
@@ -93,6 +104,21 @@ func (c *TDXTCPClient) ConnectMAC(ctx context.Context) error {
 	}
 	c.macAddr = c.macClient.CurrentAddress()
 	return nil
+}
+
+// ensureMACConnect lazily connects the MAC client (used for capital flow).
+// ConnectMAC is called lazily on first use because parallel initialization
+// with GotMain causes a gotdx race condition (StockKLineOffset panic).
+func (c *TDXTCPClient) ensureMACConnect() error {
+	c.macOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		c.macErr = c.ConnectMAC(ctx)
+		if c.macErr == nil {
+			fmt.Printf("[GotMC] MAC client connected: %s\n", c.macAddr)
+		}
+	})
+	return c.macErr
 }
 
 // Disconnect closes all connections.
@@ -170,8 +196,13 @@ func (c *TDXTCPClient) GetQuote(code string, market int) (*proto.SecurityQuote, 
 }
 
 // GetKLine fetches K-line data.
-func (c *TDXTCPClient) GetKLine(code string, market int, period string, count int, adjust int) ([]proto.SecurityBar, error) {
+func (c *TDXTCPClient) GetKLine(code string, market int, period string, count int, adjust int) (bars []proto.SecurityBar, err error) {
 	var m types.Market
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("kline protocol error: %v", r)
+		}
+	}()
 	switch market {
 	case 0:
 		m = types.MarketSZ
@@ -181,28 +212,28 @@ func (c *TDXTCPClient) GetKLine(code string, market int, period string, count in
 		return nil, fmt.Errorf("unknown market: %d", market)
 	}
 
-	category := uint16(proto.KLINE_TYPE_RI_K) // daily
+	category := uint16(proto.KLINE_TYPE_RI_K)
 	switch period {
 	case "1min":
 		category = uint16(proto.KLINE_TYPE_1MIN)
 	case "5min":
-		category = uint16(proto.KLINE_TYPE_5MIN)
+		category = 7
 	case "15min":
-		category = uint16(proto.KLINE_TYPE_15MIN)
+		category = 1
 	case "30min":
-		category = uint16(proto.KLINE_TYPE_30MIN)
+		category = 2
 	case "60min":
 		category = uint16(proto.KLINE_TYPE_1HOUR)
 	case "day":
 		category = uint16(proto.KLINE_TYPE_RI_K)
 	case "week":
-		category = uint16(proto.KLINE_TYPE_WEEKLY)
+		category = 5
 	case "month":
-		category = uint16(proto.KLINE_TYPE_MONTHLY)
+		category = 6
 	case "quarter":
-		category = uint16(proto.KLINE_TYPE_3MONTH)
+		category = 13
 	case "year":
-		category = uint16(proto.KLINE_TYPE_YEARLY)
+		category = 14
 	}
 
 	adjustType := uint16(types.AdjustNone)
@@ -213,15 +244,26 @@ func (c *TDXTCPClient) GetKLine(code string, market int, period string, count in
 		adjustType = types.AdjustHFQ
 	}
 
-	bars, err := c.mainClient.StockFullKLine(category, m.Uint8(), code, 1, adjustType, nil)
+	// Cap want to avoid "slice bounds out of range" panic in gotdx StockKLineOffset
+	want := uint16(count)
+	maxWant := uint16(count) + 200
+	if maxWant > 1200 {
+		maxWant = 1200
+	}
+
+	bars, err = c.mainClient.StockKLineOffset(category, m.Uint8(), code, 0, maxWant, 1, adjustType)
 	if err != nil {
 		return nil, fmt.Errorf("kline query: %w", err)
 	}
-	if len(bars) > count {
-		bars = bars[len(bars)-count:]
+	if bars == nil || len(bars) == 0 {
+		return nil, fmt.Errorf("kline query returned no data for %s", code)
+	}
+	if len(bars) > int(want) {
+		bars = bars[len(bars)-int(want):]
 	}
 	return bars, nil
 }
+
 
 // GetTickChart fetches intraday tick chart data.
 func (c *TDXTCPClient) GetTickChart(code string, market int) ([]proto.MinuteTimeData, error) {
@@ -282,6 +324,9 @@ func (c *TDXTCPClient) GetAuction(code string, market int) ([]proto.AuctionData,
 
 // GetCapitalFlow fetches capital flow data via MAC.
 func (c *TDXTCPClient) GetCapitalFlow(code string, market int) (*proto.MACCapitalFlowReply, error) {
+	if err := c.ensureMACConnect(); err != nil {
+		return nil, fmt.Errorf("MAC client not connected: %w", err)
+	}
 	var m types.Market
 	switch market {
 	case 0:
@@ -434,7 +479,6 @@ func (c *TDXTCPClient) ExGetQuotes(categories []uint8, codes []string) ([]proto.
 // fetches xdxr events, computes adjustment factors, and applies them locally.
 // adjust=0: none, 1: qfq, 2: hfq
 func (c *TDXTCPClient) GetKLineWithAdjust(code string, market int, period string, count int, adjust int) ([]proto.SecurityBar, error) {
-	// 1. Fetch raw bars (no server-side adjust)
 	rawBars, err := c.GetKLine(code, market, period, count+500, 0)
 	if err != nil {
 		return nil, fmt.Errorf("raw kline: %w", err)

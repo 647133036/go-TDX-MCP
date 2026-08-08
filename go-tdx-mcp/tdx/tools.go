@@ -4,11 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/bensema/gotdx/proto"
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/tdx/go-tdx-mcp/formula"
+	"github.com/tdx/go-tdx-mcp/indicator"
 )
+
+type securityLister interface {
+	GetSecurityList(market int, start uint16) (*proto.GetSecurityListReply, error)
+	GetSecurityCount(market int) (uint16, error)
+}
 
 const (
 	ToolQuotes          = "tdx_quotes"
@@ -73,48 +82,51 @@ func NewKlineTool() mcp.Tool {
 
 func NewLookupStockTool() mcp.Tool {
 	return mcp.NewTool(ToolLookupStock,
-		mcp.WithDescription("通过自然语言检索股票/指数/基金代码与名称（RAG语义搜索）"),
+		mcp.WithDescription("股票信息查找：通过代码精确匹配或名称关键词模糊匹配，从TDX TCP安全列表检索股票代码、名称、实时价格"),
 		mcp.WithString("query",
 			mcp.Required(),
-			mcp.Description("检索关键词或自然语言描述，如 '平安银行' 或 '新能源龙头'"),
-		),
-		mcp.WithString("range",
-			mcp.Description("市场范围: AG=A股(默认), HK-GP=港股, JJ=基金, MG-GP=美股, ZS=指数"),
+			mcp.Description("查询内容：6位股票代码（如000001）或股票名称关键词（如平安、茅台）"),
 		),
 		mcp.WithNumber("topK",
-			mcp.Description("返回结果数量 (默认10)"),
+			mcp.Description("返回结果数量（默认10）"),
 		),
 	)
 }
 
 func NewScreenerTool() mcp.Tool {
 	return mcp.NewTool(ToolScreener,
-		mcp.WithDescription("自然语言智能选股：根据描述条件筛选股票"),
-		mcp.WithString("message",
+		mcp.WithDescription("通达信公式选股：在全市场范围内用通达信公式筛选符合条件的股票"),
+		mcp.WithString("formula",
 			mcp.Required(),
-			mcp.Description("自然语言选股条件，如 '涨停' 或 '主板 小盘 低价 涨停'"),
+			mcp.Description("通达信选股公式，如 'CLOSE > MA(CLOSE, 20)' 或 'CLOSE > REF(CLOSE,1)*1.095'"),
 		),
-		mcp.WithString("rang",
-			mcp.Description("市场范围，默认 'AG' (A股)"),
+		mcp.WithNumber("market",
+			mcp.Description("市场: 0=深圳, 1=上海, 2=北交所 (默认0)"),
 		),
-		mcp.WithNumber("pageNo",
-			mcp.Description("页码 (默认1)"),
+		mcp.WithString("period",
+			mcp.Description("K线周期: day/week/month/1min/5min/15min/30min/60min (默认day)"),
 		),
-		mcp.WithNumber("pageSize",
-			mcp.Description("每页数量 (默认10)"),
+		mcp.WithNumber("count",
+			mcp.Description("K线根数 (默认200)"),
 		),
 	)
 }
 
 func NewIndicatorSelectTool() mcp.Tool {
 	return mcp.NewTool(ToolIndicatorSelect,
-		mcp.WithDescription("金融指标选择与查询：查询财务/技术/估值指标"),
-		mcp.WithString("message",
+		mcp.WithDescription("通达信公式选股（别名）：同 tdx_screener，用通达信公式在全市场筛选股票"),
+		mcp.WithString("formula",
 			mcp.Required(),
-			mcp.Description("指标查询描述，如 '000001 技术指标' 或 '银行业估值对比'"),
+			mcp.Description("通达信选股公式"),
 		),
-		mcp.WithString("rang",
-			mcp.Description("市场范围，默认 'AG' (A股)"),
+		mcp.WithNumber("market",
+			mcp.Description("市场: 0=深圳, 1=上海, 2=北交所 (默认0)"),
+		),
+		mcp.WithString("period",
+			mcp.Description("K线周期 (默认day)"),
+		),
+		mcp.WithNumber("count",
+			mcp.Description("K线根数 (默认200)"),
 		),
 	)
 }
@@ -139,15 +151,15 @@ func NewApiDataTool() mcp.Tool {
 	)
 }
 
-type ToolHandler func(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error)
+type Handler func(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error)
 
-func CreateToolHandler(client Client, h ToolHandler) func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func CreateHandler(client Client, h Handler) func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return h(ctx, client, request)
 	}
 }
 
-func GetHandler(name string) ToolHandler {
+func GetHandler(name string) Handler {
 	switch name {
 	case ToolQuotes:
 		return HandleQuotes
@@ -162,6 +174,15 @@ func GetHandler(name string) ToolHandler {
 	case ToolApiData:
 		return HandleApiData
 	default:
+		if h := GetV3Handler(name); h != nil {
+			return h
+		}
+		if h := GetExpandedHandler(name); h != nil {
+			return h
+		}
+		if h := GetNewHandler(name); h != nil {
+			return h
+		}
 		return nil
 	}
 }
@@ -280,33 +301,36 @@ func HandleKline(ctx context.Context, client Client, request mcp.CallToolRequest
 	// TCP format: []map[string]interface{} {Year, Open, High, Low, Close, Volume, Amount}
 	var tcpBars []map[string]interface{}
 	if json.Unmarshal(raw, &tcpBars) == nil && len(tcpBars) > 0 {
-		results := make([]map[string]interface{}, 0, len(tcpBars))
-		for _, bm := range tcpBars {
-			kline := make(map[string]interface{})
-			if yr, ok := bm["Year"]; ok {
-				ymd := toFloat64v(yr)
-				if ymd > 0 {
-					yi := int(ymd)
-					y := yi / 10000
-					m := (yi / 100) % 100
-					d := yi % 100
-					if m > 0 {
-						kline["date"] = fmt.Sprintf("%04d%02d%02d", y, m, d)
+		// Only process as TCP format if it has TCP-specific fields (capitalized keys)
+		if len(tcpBars) > 0 && tcpBars[0]["Year"] != nil {
+			results := make([]map[string]interface{}, 0, len(tcpBars))
+			for _, bm := range tcpBars {
+				kline := make(map[string]interface{})
+				if yr, ok := bm["Year"]; ok {
+					ymd := toFloat64v(yr)
+					if ymd > 0 {
+						yi := int(ymd)
+						y := yi / 10000
+						m := (yi / 100) % 100
+						d := yi % 100
+						if m > 0 {
+							kline["date"] = fmt.Sprintf("%04d%02d%02d", y, m, d)
+						}
 					}
 				}
+				kline["open"] = toFloat64v(bm["Open"])
+				kline["high"] = toFloat64v(bm["High"])
+				kline["low"] = toFloat64v(bm["Low"])
+				kline["close"] = toFloat64v(bm["Close"])
+				kline["volume"] = toFloat64v(bm["Volume"])
+				kline["amount"] = toFloat64v(bm["Amount"])
+				results = append(results, kline)
 			}
-			kline["open"] = toFloat64v(bm["Open"])
-			kline["high"] = toFloat64v(bm["High"])
-			kline["low"] = toFloat64v(bm["Low"])
-			kline["close"] = toFloat64v(bm["Close"])
-			kline["volume"] = toFloat64v(bm["Volume"])
-			kline["amount"] = toFloat64v(bm["Amount"])
-			results = append(results, kline)
+			return mcp.NewToolResultText(toJSON(results)), nil
 		}
-		return mcp.NewToolResultText(toJSON(results)), nil
 	}
 
-	// HTTP format: return as-is (ListHead/ListItem)
+	// HTTP format (Sina, East Money, etc.): return as-is
 	return mcp.NewToolResultText(toJSON(resp.Data)), nil
 }
 
@@ -347,79 +371,316 @@ func HandleLookupStock(ctx context.Context, client Client, request mcp.CallToolR
 		topK = int(v)
 	}
 
-	resp, err := client.RAGQuery(ctx, strings.TrimSpace(query), topK)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("代码检索失败: %v", err)), nil
+	// Use TDX TCP security list + keyword matching
+	type securityLister interface {
+		GetSecurityCount(market int) (uint16, error)
+		GetSecurityList(market int, start uint16) (*proto.GetSecurityListReply, error)
+	}
+	sl, ok := client.(securityLister)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持股票信息查询（无法访问安全列表）"), nil
 	}
 
-	var result strings.Builder
-	for i, r := range resp.Results {
-		result.WriteString(fmt.Sprintf("%d. %s (%s) - %s [%.2f]\n", i+1, r.Name, r.Code, r.Type, r.Score))
+	// Fetch securities from both markets
+	var allSecs []proto.Security
+	for _, market := range []int{0, 1} {
+		count, err := sl.GetSecurityCount(market)
+		if err != nil {
+			continue
+		}
+		for start := uint16(0); start < count; start += 1600 {
+			reply, err := sl.GetSecurityList(market, start)
+			if err != nil {
+				continue
+			}
+			if reply != nil {
+				allSecs = append(allSecs, reply.List...)
+			}
+		}
 	}
-	if result.Len() == 0 {
-		result.WriteString("未找到匹配结果")
+
+	// Keyword match
+	matches := make([]struct {
+		Code  string  `json:"code"`
+		Name  string  `json:"name"`
+		Score float64 `json:"score"`
+	}, 0, topK)
+
+	for _, sec := range allSecs {
+		if sec.Name == "" || sec.Code == "" {
+			continue
+		}
+		score := keywordMatchScore(query, sec.Name)
+		if score > 0 {
+			matches = append(matches, struct {
+				Code  string  `json:"code"`
+				Name  string  `json:"name"`
+				Score float64 `json:"score"`
+			}{Code: sec.Code, Name: sec.Name, Score: score})
+		}
 	}
-	return mcp.NewToolResultText(result.String()), nil
+
+	// Sort by score descending
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].Score > matches[j].Score
+	})
+	if len(matches) > topK {
+		matches = matches[:topK]
+	}
+
+	if len(matches) == 0 {
+		return mcp.NewToolResultText(toJSON(map[string]interface{}{
+			"query": query,
+			"total": 0,
+			"results": []string{},
+			"note": "未找到匹配结果。请提供准确的股票代码（如 000001）或股票名称关键词。",
+		})), nil
+	}
+
+	return mcp.NewToolResultText(toJSON(map[string]interface{}{
+		"query":      query,
+		"total":      len(matches),
+		"match_type": "keyword",
+		"results":    matches,
+	})), nil
+}
+
+// keywordMatchScore computes a relevance score for matching query keywords
+// against a stock name. Higher score = more relevant.
+func keywordMatchScore(query string, name string) float64 {
+	score := 0.0
+
+	// Exact match
+	if query == name {
+		return 100.0
+	}
+
+	// Contains match: query contains stock name (e.g., "平安" matches "平安银行")
+	if strings.Contains(query, name) {
+		return 90.0
+	}
+
+	// Contains match: stock name contains query (e.g., "银行" matches "平安银行")
+	if strings.Contains(name, query) {
+		return 80.0
+	}
+
+	// Character overlap
+	queryChars := strings.Split(query, "")
+	nameChars := strings.Split(name, "")
+	matchCount := 0
+	for _, c := range queryChars {
+		if strings.Contains(strings.Join(nameChars, ""), c) {
+			matchCount++
+		}
+	}
+
+	if len(queryChars) > 0 {
+		ratio := float64(matchCount) / float64(len(queryChars))
+		if ratio >= 0.5 {
+			score = ratio * 50.0
+		}
+	}
+
+	return score
 }
 
 func HandleScreener(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	message, err := request.RequireString("message")
+	formulaCode, err := request.RequireString("formula")
 	if err != nil {
-		return mcp.NewToolResultError("message 参数必填"), nil
+		return mcp.NewToolResultError("formula 参数必填（通达信选股公式，如 'CLOSE > MA(CLOSE, 20)'）"), nil
 	}
-	rang := "AG"
-	if v := request.GetString("rang", ""); v != "" {
-		rang = v
+	market := 0
+	if v, ok := request.GetArguments()["market"].(float64); ok {
+		market = int(v)
 	}
-	pageNo := "1"
-	if v := request.GetFloat("pageNo", 0); v > 0 {
-		pageNo = fmt.Sprintf("%d", int(v))
+	period := "day"
+	if p, ok := request.GetArguments()["period"].(string); ok && p != "" {
+		period = p
 	}
-	pageSize := "10"
-	if v := request.GetFloat("pageSize", 0); v > 0 {
-		pageSize = fmt.Sprintf("%d", int(v))
+	count := 200
+	if v, ok := request.GetArguments()["count"].(float64); ok && v > 0 {
+		count = int(v)
 	}
 
-	reqBody := ScreenerRequest{{
-		Message:  strings.TrimSpace(message),
-		Rang:     rang,
-		PageNo:   pageNo,
-		PageSize: pageSize,
-	}}
-
-	resp, err := client.TQLEXQuery(ctx, "JNLPSE:wendaQuery", reqBody)
+	// 获取证券列表
+	sl, ok := client.(securityLister)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持证券列表查询"), nil
+	}
+	totalCount, err := sl.GetSecurityCount(market)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("智能选股失败: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("获取证券数量失败: %v", err)), nil
 	}
-	if resp.Data == nil {
-		return mcp.NewToolResultError("智能选股返回空数据"), nil
+	allSecs := make([]proto.Security, 0)
+	for start := uint16(0); start < totalCount; start += 1600 {
+		reply, err := sl.GetSecurityList(market, start)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("获取证券列表失败: %v", err)), nil
+		}
+		if reply != nil {
+			allSecs = append(allSecs, reply.List...)
+		}
 	}
-	return mcp.NewToolResultText(toJSON(resp.Data)), nil
+
+	// 逐个执行公式选股
+	kc, ok := client.(klineQueryClient)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持K线查询"), nil
+	}
+	matches := make([]map[string]interface{}, 0)
+	eng := formula.NewEngine()
+
+	for _, sec := range allSecs {
+		code := sec.Code
+		if code == "" {
+			continue
+		}
+		bars, err := kc.KlineQuery(ctx, code, market, period, count, 0)
+		if err != nil {
+			continue
+		}
+		if len(bars) == 0 {
+			continue
+		}
+
+		indicatorBars := make([]indicator.Bar, len(bars))
+		for i, b := range bars {
+			indicatorBars[i] = indicator.Bar{
+				Open: b.Open, High: b.High, Low: b.Low, Close: b.Close,
+				Vol: b.Vol, Amount: b.Amount,
+			}
+		}
+
+		result, err := eng.Execute(formulaCode, indicatorBars)
+		if err != nil {
+			continue
+		}
+
+		lastValue := 0.0
+		if len(result.Outputs) > 0 {
+			if data := result.Outputs[0].Data; len(data) > 0 {
+				lastValue = data[len(data)-1]
+			}
+		}
+
+		if lastValue > 0 {
+			matches = append(matches, map[string]interface{}{
+				"code":     code,
+				"name":     sec.Name,
+				"setcode":  code,
+				"last_val": lastValue,
+				"close":    bars[len(bars)-1].Close,
+			})
+		}
+	}
+
+	return mcp.NewToolResultText(toJSON(map[string]interface{}{
+		"formula":   formulaCode,
+		"total":     len(allSecs),
+		"matched":   len(matches),
+		"period":    period,
+		"count":     count,
+		"results":   matches,
+	})), nil
 }
 
 func HandleIndicatorSelect(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	message, err := request.RequireString("message")
+	formulaCode, err := request.RequireString("formula")
 	if err != nil {
-		return mcp.NewToolResultError("message 参数必填"), nil
+		return mcp.NewToolResultError("formula 参数必填（通达信选股公式）"), nil
 	}
-	rang := "AG"
-	if v := request.GetString("rang", ""); v != "" {
-		rang = v
+	market := 0
+	if v, ok := request.GetArguments()["market"].(float64); ok {
+		market = int(v)
+	}
+	period := "day"
+	if p, ok := request.GetArguments()["period"].(string); ok && p != "" {
+		period = p
+	}
+	count := 200
+	if v, ok := request.GetArguments()["count"].(float64); ok && v > 0 {
+		count = int(v)
 	}
 
-	reqBody := IndicatorSelectRequest{
-		Message: strings.TrimSpace(message),
-		Rang:    rang,
+	sl, ok := client.(securityLister)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持证券列表查询"), nil
+	}
+	totalCount, err := sl.GetSecurityCount(market)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("获取证券数量失败: %v", err)), nil
+	}
+	allSecs := make([]proto.Security, 0)
+	for start := uint16(0); start < totalCount; start += 1600 {
+		reply, err := sl.GetSecurityList(market, start)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("获取证券列表失败: %v", err)), nil
+		}
+		if reply != nil {
+			allSecs = append(allSecs, reply.List...)
+		}
 	}
 
-	resp, err := client.TQLEXQuery(ctx, "NLPSE:InfoSelectV2", reqBody)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("指标查询失败: %v", err)), nil
+	kc, ok := client.(klineQueryClient)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持K线查询"), nil
 	}
-	if resp.Data == nil {
-		return mcp.NewToolResultError("指标查询返回空数据"), nil
+	matches := make([]map[string]interface{}, 0)
+	eng := formula.NewEngine()
+
+	for _, sec := range allSecs {
+		code := sec.Code
+		if code == "" {
+			continue
+		}
+		bars, err := kc.KlineQuery(ctx, code, market, period, count, 0)
+		if err != nil {
+			continue
+		}
+		if len(bars) == 0 {
+			continue
+		}
+
+		indicatorBars := make([]indicator.Bar, len(bars))
+		for i, b := range bars {
+			indicatorBars[i] = indicator.Bar{
+				Open: b.Open, High: b.High, Low: b.Low, Close: b.Close,
+				Vol: b.Vol, Amount: b.Amount,
+			}
+		}
+
+		result, err := eng.Execute(formulaCode, indicatorBars)
+		if err != nil {
+			continue
+		}
+
+		lastValue := 0.0
+		if len(result.Outputs) > 0 {
+			if data := result.Outputs[0].Data; len(data) > 0 {
+				lastValue = data[len(data)-1]
+			}
+		}
+
+		if lastValue > 0 {
+			matches = append(matches, map[string]interface{}{
+				"code":     code,
+				"name":     sec.Name,
+				"setcode":  code,
+				"last_val": lastValue,
+				"close":    bars[len(bars)-1].Close,
+			})
+		}
 	}
-	return mcp.NewToolResultText(toJSON(resp.Data)), nil
+
+	return mcp.NewToolResultText(toJSON(map[string]interface{}{
+		"formula":   formulaCode,
+		"total":     len(allSecs),
+		"matched":   len(matches),
+		"period":    period,
+		"count":     count,
+		"results":   matches,
+	})), nil
 }
 
 func HandleApiData(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {

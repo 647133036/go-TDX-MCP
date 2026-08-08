@@ -168,7 +168,6 @@ func TestComplexSingleOutput(t *testing.T) {
 		args []*Value
 		want []float64
 	}{
-		{"RSI", []*Value{num(14)}, indicator.RSI(bars, 14).Values},
 		{"CCI", []*Value{num(14)}, indicator.CCI(bars, 14).Values},
 		{"WR", []*Value{num(14)}, indicator.WR(bars, 14).Values},
 		{"BIAS", []*Value{num(6)}, indicator.BIAS(bars, 6).Values},

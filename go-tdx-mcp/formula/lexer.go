@@ -112,6 +112,25 @@ func (l *Lexer) scanNumber() error {
 	start := l.pos
 	startCol := l.column
 
+	// Check for hex number: 0xHHHH or 0XHHHH
+	if l.peek() == '0' {
+		next := l.peekNext()
+		if next == 'x' || next == 'X' {
+			l.advance() // consume '0'
+			l.advance() // consume 'x'/'X'
+			for !l.isAtEnd() {
+				ch := l.peek()
+				if isHexDigit(ch) {
+					l.advance()
+				} else {
+					break
+				}
+			}
+			l.tokens = append(l.tokens, NewToken(TokenNumber, l.input[start:l.pos], l.line, startCol))
+			return nil
+		}
+	}
+
 	for !l.isAtEnd() && unicode.IsDigit(l.peek()) {
 		l.advance()
 	}
@@ -135,6 +154,10 @@ func (l *Lexer) scanNumber() error {
 
 	l.tokens = append(l.tokens, NewToken(TokenNumber, l.input[start:l.pos], l.line, startCol))
 	return nil
+}
+
+func isHexDigit(ch rune) bool {
+	return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
 }
 
 func (l *Lexer) scanString() error {

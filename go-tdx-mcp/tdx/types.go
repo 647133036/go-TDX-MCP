@@ -113,6 +113,6 @@ func PeriodToCode(period string) int {
 	case "30min", "30分钟":
 		return 12
 	default:
-		return 4
+		return 0
 	}
 }

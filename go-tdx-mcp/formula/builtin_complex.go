@@ -24,7 +24,6 @@ func (r *FunctionRegistry) registerComplexBuiltin() {
 	r.Register("BBI", "indicator", "0~4", "多空指标 BBI", fnBBI)
 	r.Register("ASI", "indicator", "1~2", "振动升降指标 ASI(N)", fnASI)
 	r.Register("AROON", "indicator", "1~2", "阿隆指标 AROON(N)", fnAROON)
-	r.Register("RSI", "indicator", "1~2", "相对强弱指标 RSI(N)", fnRSI)
 	r.Register("CCI", "indicator", "1~2", "顺势指标 CCI(N)", fnCCI)
 	r.Register("WR", "indicator", "1~2", "威廉指标 WR(N)", fnWR)
 	r.Register("BIAS", "indicator", "1~2", "乖离率 BIAS(N)", fnBIAS)
@@ -200,14 +199,6 @@ func fnAROON(args []*Value, bars []indicator.Bar) (*Value, error) {
 		return nil, err
 	}
 	return NewArrayValue(indicator.AROON(bars, n).Values), nil
-}
-
-func fnRSI(args []*Value, bars []indicator.Bar) (*Value, error) {
-	n, err := posIntOr(args, 0, 14, "RSI")
-	if err != nil {
-		return nil, err
-	}
-	return NewArrayValue(indicator.RSI(bars, n).Values), nil
 }
 
 func fnCCI(args []*Value, bars []indicator.Bar) (*Value, error) {

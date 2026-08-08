@@ -15,7 +15,6 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/tdx/go-tdx-mcp/backtest"
 	"github.com/tdx/go-tdx-mcp/chanlun"
-	"github.com/tdx/go-tdx-mcp/finance"
 	"github.com/tdx/go-tdx-mcp/indicator"
 	"github.com/tdx/go-tdx-mcp/offline"
 	"github.com/tdx/go-tdx-mcp/scraper"
@@ -1731,17 +1730,26 @@ func HandleTransaction(ctx context.Context, client Client, request mcp.CallToolR
 
 // HandleBoardList fetches board category list.
 func HandleBoardList(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	boardType, err := request.RequireString("board_type")
-	if err != nil {
-		return mcp.NewToolResultError("board_type 参数必填"), nil
+	args := request.GetArguments()
+	boardType := ""
+	// Accept both snake_case and camelCase parameter names
+	if v, ok := args["board_type"]; ok {
+		boardType = fmt.Sprintf("%v", v)
+	} else if v, ok := args["boardType"]; ok {
+		boardType = fmt.Sprintf("%v", v)
+	}
+	if boardType == "" {
+		return mcp.NewToolResultError("board_type/boardType 参数必填"), nil
 	}
 
 	params := BoardListParams{
 		BoardType: boardType,
 		Count:     200,
 	}
-	if v, ok := request.GetArguments()["count"].(float64); ok {
-		params.Count = int(v)
+	if v, ok := args["count"]; ok {
+		if f, ok := v.(float64); ok {
+			params.Count = int(f)
+		}
 	}
 
 	resp, err := client.TQLEXQuery(ctx, "TdxShare.PBBoardList", params)
@@ -2000,7 +2008,7 @@ func HandleAnnouncement(ctx context.Context, _ Client, request mcp.CallToolReque
 	return mcp.NewToolResultText(toJSON(result)), nil
 }
 
-// HandleFinancial fetches financial statements via Sina Finance API.
+// HandleFinancial fetches financial statements via EastMoney datacenter API (no token needed).
 func HandleFinancial(ctx context.Context, _ Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	code, err := request.RequireString("code")
 	if err != nil {
@@ -2016,16 +2024,47 @@ func HandleFinancial(ctx context.Context, _ Client, request mcp.CallToolRequest)
 		num = int(v)
 	}
 
-	report, err := finance.FetchReport(code, reportType)
+	// EastMoney report name mapping: lrb/RPT_LICO_FN_CPD, fzb/RPT_LICO_FN_Balance, llb/RPT_LICO_FN_CashFlow
+	var reportName string
+	switch strings.ToLower(reportType) {
+	case "lrb":
+		reportName = "RPT_LICO_FN_CPD"
+	case "fzb":
+		reportName = "RPT_LICO_FN_Balance"
+	case "llb":
+		reportName = "RPT_LICO_FN_CashFlow"
+	default:
+		return mcp.NewToolResultError("report_type 必须为: lrb(利润表)/fzb(资产负债表)/llb(现金流量表)"), nil
+	}
+
+	hc := &http.Client{Timeout: 10 * time.Second}
+	url := fmt.Sprintf(
+		"https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=%s&columns=ALL&filter=(SECURITY_CODE=%%22%s%%22)&pageSize=%d&pageNumber=1&sortTypes=-1&sortColumns=REPORTDATE",
+		reportName, code, num,
+	)
+	resp, err := hc.Get(url)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("获取财务数据失败: %v", err)), nil
 	}
-	if len(report.Periods) > num {
-		report.Periods = report.Periods[:num]
-	}
-	report.Num = len(report.Periods)
+	defer resp.Body.Close()
 
-	return mcp.NewToolResultText(toJSON(report)), nil
+	var fmResp fmDatacenterResp
+	if err := json.NewDecoder(resp.Body).Decode(&fmResp); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("解析财务数据失败: %v", err)), nil
+	}
+	if !fmResp.Success || fmResp.Result == nil {
+		return mcp.NewToolResultError("财务数据为空"), nil
+	}
+
+	// Build output
+	out := map[string]interface{}{
+		"code":        code,
+		"report_type": reportType,
+		"num":         len(fmResp.Result.Data),
+		"source":      "东方财富数据中心",
+		"data":        fmResp.Result.Data,
+	}
+	return mcp.NewToolResultText(toJSON(out)), nil
 }
 
 // HandleIndicatorCompute fetches K-line data and computes technical indicators.
@@ -2288,6 +2327,21 @@ func HandleBacktest(ctx context.Context, client Client, request mcp.CallToolRequ
 	}
 	if v, ok := request.GetArguments()["cash"].(float64); ok {
 		cash = v
+	}
+
+	// Normalize strategy name (accept both snake_case and UPPER_SNAKE_CASE)
+	strategy = strings.ToLower(strings.ReplaceAll(strategy, "_", "_"))
+
+	// Map common aliases
+	strategyMap := map[string]string{
+		"sma_cross":   "ma_cross",
+		"macd_cross":  "macd_cross",
+		"rsi_reversal": "rsi_reversal",
+		"boll_breakout": "bollinger_breakout",
+		"bollinger":   "bollinger_breakout",
+	}
+	if mapped, ok := strategyMap[strategy]; ok {
+		strategy = mapped
 	}
 
 	st := backtest.NewStrategy(strategy)
@@ -3259,8 +3313,8 @@ func GetAllExpandedTools() []mcp.Tool {
 	}
 }
 
-// GetExpandedHandler returns the ToolHandler for a given expanded tool name.
-func GetExpandedHandler(name string) ToolHandler {
+// GetExpandedHandler returns the Handler for a given expanded tool name.
+func GetExpandedHandler(name string) Handler {
 	switch name {
 	case ToolTick:
 		return HandleTick

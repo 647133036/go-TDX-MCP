@@ -1,4 +1,5 @@
 {
-  "token": "",
-  "timeout": 30
+  "timeout": 30,
+  "tdx_host": "",
+  "tdx_port": 0
 }

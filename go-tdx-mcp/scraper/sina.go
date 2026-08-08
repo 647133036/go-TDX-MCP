@@ -1,6 +1,7 @@
 package scraper
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -548,6 +549,99 @@ func (c *SinaClient) GetUSStockQuotes(securities []string) (map[string]map[strin
 	}
 
 	return results, nil
+}
+
+// GetKlineHistory fetches historical K-line data from Sina VIP API.
+// symbol: sz000001 or sh000001
+// scale: 1=1min, 5=5min, 15=15min, 30=30min, 60=60min, 240=day, 1000=week, 5000=month
+// datalen: number of bars to fetch
+func (c *SinaClient) GetKlineHistory(symbol string, scale int, datalen int) ([]map[string]interface{}, error) {
+	if datalen <= 0 || datalen > 10000 {
+		datalen = 200
+	}
+	if scale == 0 {
+		scale = 240 // default day
+	}
+	// Ensure symbol has market prefix
+	sym := strings.ToLower(strings.TrimSpace(symbol))
+	if !strings.HasPrefix(sym, "sz") && !strings.HasPrefix(sym, "sh") {
+		if strings.HasPrefix(sym, "6") || strings.HasPrefix(sym, "9") || strings.HasPrefix(sym, "7") {
+			sym = "sh" + sym
+		} else {
+			sym = "sz" + sym
+		}
+	}
+
+	url := fmt.Sprintf(
+		"https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=%s&scale=%d&ma=no&datalen=%d",
+		sym, scale, datalen,
+	)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Referer", "https://finance.sina.com.cn/")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	data := strings.TrimSpace(string(body))
+	if len(data) < 2 || data[0] != '[' {
+		return []map[string]interface{}{}, nil
+	}
+
+	var rawResults []map[string]interface{}
+	if err := json.Unmarshal([]byte(data), &rawResults); err != nil {
+		return nil, err
+	}
+
+	results := make([]map[string]interface{}, 0, len(rawResults))
+	for _, r := range rawResults {
+		if r == nil {
+			continue
+		}
+		kline := map[string]interface{}{
+			"date":        toString(r["day"]),
+			"open":        toFloat(r["open"]),
+			"close":       toFloat(r["close"]),
+			"high":        toFloat(r["high"]),
+			"low":         toFloat(r["low"]),
+			"volume":      toFloat(r["volume"]),
+		}
+		results = append(results, kline)
+	}
+	return results, nil
+}
+
+func toString(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+func toFloat(v interface{}) float64 {
+	if v == nil {
+		return 0
+	}
+	if f, ok := v.(float64); ok {
+		return f
+	}
+	if s, ok := v.(string); ok {
+		return parseFloat(s)
+	}
+	return 0
 }
 
 func parseFloat(s string) float64 {

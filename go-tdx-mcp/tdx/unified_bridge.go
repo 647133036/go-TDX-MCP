@@ -75,12 +75,22 @@ func (uc *UnifiedClient) QueryQuotes(codes []string, market int) (*TQLEXResponse
 func (uc *UnifiedClient) QueryKline(code string, market int, period string, count, adjust int) (*TQLEXResponse, error) {
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
 		bars, err := uc.tcpClient.GetKLineWithAdjust(code, market, period, count, adjust)
-		if err == nil {
+		if err == nil && len(bars) > 0 {
 			encoded, _ := json.Marshal(bars)
 			return &TQLEXResponse{Data: json.RawMessage(encoded)}, nil
 		}
 	}
-	// HTTP fallback — use PBFXT, not PBQuotes (PBQuotes is not registered on TQLEX API)
+
+	// Fall back to Sina HTTP API (no TDX_TOKEN needed)
+	uc.initScrapers()
+	if uc.sinaClient != nil {
+		return uc.queryKlineHTTP(code, market, period, count)
+	}
+
+	// Last resort: TQLEX HTTP (requires TDX_TOKEN)
+	if uc.httpClient == nil {
+		return nil, fmt.Errorf("kline: TCP failed and no HTTP client (missing TDX_TOKEN)")
+	}
 	periodCode := PeriodToCode(period)
 	body := KlineRequest{
 		Head:          TDXHead{Target: "0", CharSet: "UTF8"},
@@ -337,7 +347,9 @@ func (uc *UnifiedClient) KlineQuery(ctx context.Context, code string, market int
 	}
 	// If TCP is unavailable or failed, fall through to HTTP fallback
 	if uc.tcpClient == nil || !uc.tcpClient.IsConnected() || err != nil {
-		// HTTP fallback — use PBFXT, not PBQuotes (PBQuotes is not registered)
+		if uc.httpClient == nil {
+			return nil, fmt.Errorf("KlineQuery: TCP failed and no HTTP client (missing TDX_TOKEN)")
+		}
 		periodCode := PeriodToCode(period)
 		body := KlineRequest{
 			Head:          TDXHead{Target: "0", CharSet: "UTF8"},

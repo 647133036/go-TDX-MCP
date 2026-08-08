@@ -41,7 +41,7 @@ func NewParser(tokens []Token) *Parser {
 func (p *Parser) Parse() (*Program, error) {
 	body := make([]Stmt, 0)
 	for !p.isAtEnd() {
-		if p.current.Type == TokenNewline {
+		if p.current.Type == TokenNewline || p.current.Type == TokenSemicolon {
 			p.advance()
 			continue
 		}
@@ -85,9 +85,13 @@ func (p *Parser) parseStatement() (Stmt, error) {
 	}
 
 	if call, ok := expr.(*CallExpr); ok && plotFunctionNames[strings.ToUpper(call.Func)] {
+		style, err := p.parseStyleSuffixes()
+		if err != nil {
+			return nil, err
+		}
 		return &PlotCallStmt{
 			Type: "PlotCallStmt", Func: strings.ToUpper(call.Func), Args: call.Args,
-			Line: p.current.Line, Col: p.current.Col,
+			Style: style, Line: p.current.Line, Col: p.current.Col,
 		}, nil
 	}
 	return &ExpressionStmt{Type: "ExpressionStmt", Expr: expr}, nil
@@ -318,9 +322,20 @@ func (p *Parser) parsePrimary() (Expr, error) {
 }
 
 func (p *Parser) parseNumber() (Expr, error) {
-	value, err := strconv.ParseFloat(p.current.Value, 64)
+	raw := p.current.Value
+	var value float64
+	var err error
+	if strings.HasPrefix(raw, "0x") || strings.HasPrefix(raw, "0X") {
+		v, perr := strconv.ParseUint(raw[2:], 16, 64)
+		if perr != nil {
+			return nil, p.error(fmt.Sprintf("invalid hex number: %s", raw))
+		}
+		value = float64(v)
+	} else {
+		value, err = strconv.ParseFloat(raw, 64)
+	}
 	if err != nil {
-		return nil, p.error(fmt.Sprintf("invalid number: %s", p.current.Value))
+		return nil, p.error(fmt.Sprintf("invalid number: %s", raw))
 	}
 	p.advance()
 	return &NumberExpr{Type: "NumberExpr", Value: value}, nil

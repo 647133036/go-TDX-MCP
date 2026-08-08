@@ -67,11 +67,12 @@ type BKColorStmt struct {
 }
 
 type PlotCallStmt struct {
-	Type string `json:"type"`
-	Func string `json:"func"`
-	Args []Expr `json:"args"`
-	Line int    `json:"line,omitempty"`
-	Col  int    `json:"col,omitempty"`
+	Type string        `json:"type"`
+	Func string        `json:"func"`
+	Args []Expr        `json:"args"`
+	Style *DrawingStyle `json:"style,omitempty"`
+	Line int           `json:"line,omitempty"`
+	Col  int           `json:"col,omitempty"`
 }
 
 type ExpressionStmt struct {

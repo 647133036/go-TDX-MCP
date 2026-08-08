@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/bensema/gotdx/proto"
+	"github.com/bensema/gotdx/types"
 	"github.com/tdx/go-tdx-mcp/backtest"
 	"github.com/tdx/go-tdx-mcp/chanlun"
 	"github.com/tdx/go-tdx-mcp/factor"
@@ -85,10 +88,14 @@ type UnifiedClient struct {
 }
 
 // NewUnifiedClient creates a unified client with both HTTP and TCP backends.
+// HTTP client is only created when token is non-empty; when absent, all data
+// flows through TCP (auto-select TDX servers) and web scrapers.
 func NewUnifiedClient(token string, timeoutSec int, tdxHost string, tdxPort int, opts ...UnifiedClientOption) *UnifiedClient {
 	uc := &UnifiedClient{
-		httpClient: NewHTTPClient(token, 0),
-		tcpClient:  NewTDXTCPClientWithHost(timeoutSec, tdxHost, tdxPort),
+		tcpClient: NewTDXTCPClientWithHost(timeoutSec, tdxHost, tdxPort),
+	}
+	if token != "" {
+		uc.httpClient = NewHTTPClient(token, 0)
 	}
 	for _, opt := range opts {
 		opt(uc)
@@ -167,34 +174,24 @@ func WithMarginTradeClient(marginTradeClient *scraper.MarginTradeWebClient) Unif
 
 // initTCP lazily initializes TCP connections.
 func (uc *UnifiedClient) initTCP(ctx context.Context) error {
+	// Only connect main A-share server. ConnectEx/ConnectMAC for HK/US/futures
+	// are not needed for A-share queries and cause a gotdx race condition when
+	// initialized concurrently with ConnectMain (see gotdx StockKLineOffset panic
+	// with "slice bounds out of range" after parallel init).
 	uc.initOnce.Do(func() {
-		// Try connecting main + ex + mac in parallel
-		var wg sync.WaitGroup
-		wg.Add(3)
-
-		go func() {
-			defer wg.Done()
-			_ = uc.tcpClient.ConnectMain(ctx)
-		}()
-		go func() {
-			defer wg.Done()
-			_ = uc.tcpClient.ConnectEx(ctx)
-		}()
-		go func() {
-			defer wg.Done()
-			_ = uc.tcpClient.ConnectMAC(ctx)
-		}()
-		wg.Wait()
-	})
-
-	// Verify main connection is actually usable
-	if !uc.tcpClient.IsConnected() {
 		if err := uc.tcpClient.ConnectMain(ctx); err != nil {
 			uc.initErr = fmt.Errorf("tcp init failed: %w", err)
-			return uc.initErr
 		}
+	})
+	if uc.initErr != nil {
+		return uc.initErr
 	}
 	return nil
+}
+
+// hasHTTP returns true when an HTTP TQLEX client is configured (token provided).
+func (uc *UnifiedClient) hasHTTP() bool {
+	return uc.httpClient != nil
 }
 
 // TQLEXQuery implements the Client interface with TCP-first fallback to TQLEX.
@@ -243,11 +240,18 @@ func (uc *UnifiedClient) TQLEXQuery(ctx context.Context, entry string, body inte
 		return uc.queryTrans(body)
 	}
 
-	// For unimplemented entries, fall back to HTTP
-	if err := uc.initTCP(ctx); err != nil {
+	// For unimplemented entries, try TCP first, then HTTP if available
+	if err := uc.initTCP(ctx); err == nil && uc.tcpClient.IsConnected() {
+		// TCP connected but entry not implemented via TCP — try HTTP if available
+		if !uc.hasHTTP() {
+			return nil, fmt.Errorf("entry %s not supported via TCP and no HTTP client (missing TDX_TOKEN)", entry)
+		}
 		return uc.httpClient.TQLEXQuery(ctx, entry, body)
 	}
-	return uc.httpClient.TQLEXQuery(ctx, entry, body)
+	if uc.hasHTTP() {
+		return uc.httpClient.TQLEXQuery(ctx, entry, body)
+	}
+	return nil, fmt.Errorf("entry %s not supported via TCP and no HTTP client configured", entry)
 }
 
 // queryQuotes handles PBHQInfo via TCP or MultiHostCollector.
@@ -270,15 +274,19 @@ func (uc *UnifiedClient) queryQuotes(body interface{}) (*TQLEXResponse, error) {
 		}
 	}
 
-	// Try TCP first
+	// Try TCP first with panic recovery
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
-		if result, err := uc.tryTCPQuotes(code, market); err == nil {
+		result, err := uc.tryTCPQuotes(code, market)
+		if err == nil && result != nil {
 			return result, nil
 		}
 	}
 
 	// Fall back to HTTP TQLEX
-	return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBHQInfo", body)
+	if uc.hasHTTP() {
+		return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBHQInfo", body)
+	}
+	return nil, fmt.Errorf("quotes: TCP failed and no HTTP client (missing TDX_TOKEN)")
 }
 
 // tryTCPQuotes attempts to get quotes via TCP, recovering from panics.
@@ -299,6 +307,13 @@ func (uc *UnifiedClient) tryTCPQuotes(code string, market int) (*TQLEXResponse, 
 
 // queryKline handles PBFXT via TCP or MultiHostCollector.
 func (uc *UnifiedClient) queryKline(body interface{}) (*TQLEXResponse, error) {
+	// Ensure TCP is initialized before querying
+	_ = uc.initTCP(context.Background())
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("PANIC in queryKline: %v\n", r)
+		}
+	}()
 	data, ok := normalizeBody(body)
 	if !ok {
 		return nil, fmt.Errorf("invalid kline request body type")
@@ -335,20 +350,76 @@ func (uc *UnifiedClient) queryKline(body interface{}) (*TQLEXResponse, error) {
 
 	// Try TCP first with panic recovery
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
-		if result, err := uc.tryTCPKline(code, market, period, count, fq); err == nil {
-			return result, nil
+		result, err := uc.tryTCPKline(code, market, period, count, fq)
+		if result != nil {
+			// Check if data is empty/unusable
+			if raw, ok := result.Data.(json.RawMessage); ok && len(raw) > 0 {
+				isEmpty := (raw[0] == '[' && len(raw) <= 2) || // "[]"
+					(raw[0] == 'n' && len(raw) == 4)           // "null"
+				if !isEmpty {
+					return result, nil
+				}
+			}
 		}
+		_ = err
 	}
 
-	// Fall back to HTTP TQLEX
-	return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBFXT", body)
+	// Fall back to Sina HTTP API for Kline (no TDX_TOKEN needed)
+	uc.initScrapers()
+	return uc.queryKlineHTTP(code, market, period, count)
+}
+
+// queryKlineHTTP fetches K-line via Sina VIP HTTP API (no token required).
+// push2his.eastmoney.com is not reachable from this environment, so Sina is used.
+func (uc *UnifiedClient) queryKlineHTTP(code string, market int, period string, count int) (*TQLEXResponse, error) {
+	if uc.sinaClient == nil {
+		return nil, fmt.Errorf("kline: TCP returned empty and no HTTP client configured")
+	}
+	// Map period to Sina scale parameter
+	scale := 240 // 日K
+	switch period {
+	case "5min":
+		scale = 5
+	case "15min":
+		scale = 15
+	case "30min":
+		scale = 30
+	case "60min":
+		scale = 60
+	case "week":
+		scale = 1000
+	case "month":
+		scale = 5000
+	case "day":
+		scale = 240
+	}
+	// Build symbol: sz000001 (SZ) or sh000001 (SH)
+	prefix := "sz"
+	if market == 1 {
+		prefix = "sh"
+	}
+	symbol := prefix + code
+	klines, err := uc.sinaClient.GetKlineHistory(symbol, scale, count)
+	if err != nil {
+		return nil, fmt.Errorf("kline Sina fallback: %w", err)
+	}
+	if len(klines) == 0 {
+		return nil, fmt.Errorf("kline: no data from Sina for %s", symbol)
+	}
+	result, _ := json.Marshal(klines)
+	return &TQLEXResponse{Data: json.RawMessage(result)}, nil
 }
 
 // tryTCPKline attempts to get kline data via TCP, recovering from panics.
 func (uc *UnifiedClient) tryTCPKline(code string, market int, period string, count, fq int) (*TQLEXResponse, error) {
 	var result *TQLEXResponse
-	err := uc.tcpClient.withRetry(func() error {
-		defer func() { recover() }()
+	var err error
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic in GetKLineWithAdjust: %v", r)
+		}
+	}()
+	err = uc.tcpClient.withRetry(func() error {
 		bars, e := uc.tcpClient.GetKLineWithAdjust(code, market, period, count, fq)
 		if e != nil {
 			return e
@@ -361,14 +432,20 @@ func (uc *UnifiedClient) tryTCPKline(code string, market int, period string, cou
 }
 
 // queryScreener handles wendaQuery via TQLEX HTTP.
-// wendaQuery is NLP-based, no direct TCP equivalent exists — route to HTTP.
+// wendaQuery is NLP-based, no direct TCP equivalent exists.
 func (uc *UnifiedClient) queryScreener(body interface{}) (*TQLEXResponse, error) {
+	if !uc.hasHTTP() {
+		return nil, fmt.Errorf("screener requires HTTP client (missing TDX_TOKEN); TCP auto-select can be used as alternative")
+	}
 	return uc.httpClient.TQLEXQuery(context.Background(), "JNLPSE:wendaQuery", body)
 }
 
 // queryIndicator handles InfoSelectV2 via TQLEX HTTP.
-// InfoSelectV2 is NLP-based, no direct TCP equivalent exists — route to HTTP.
+// InfoSelectV2 is NLP-based, no direct TCP equivalent exists.
 func (uc *UnifiedClient) queryIndicator(body interface{}) (*TQLEXResponse, error) {
+	if !uc.hasHTTP() {
+		return nil, fmt.Errorf("indicator select requires HTTP client (missing TDX_TOKEN); use formula engine or factor engine as alternative")
+	}
 	return uc.httpClient.TQLEXQuery(context.Background(), "NLPSE:InfoSelectV2", body)
 }
 
@@ -386,13 +463,17 @@ func (uc *UnifiedClient) queryAuction(body interface{}) (*TQLEXResponse, error) 
 
 	// Try TCP first with panic recovery
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
-		if result, err := uc.tryTCPAuction(code, market); err == nil {
+		result, err := uc.tryTCPAuction(code, market)
+		if err == nil && result != nil {
 			return result, nil
 		}
 	}
 
 	// Fall back to HTTP TQLEX
-	return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBAuction", body)
+	if uc.hasHTTP() {
+		return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBAuction", body)
+	}
+	return nil, fmt.Errorf("auction: TCP failed and no HTTP client (missing TDX_TOKEN)")
 }
 
 // tryTCPAuction attempts to get auction data via TCP, recovering from panics.
@@ -425,13 +506,17 @@ func (uc *UnifiedClient) queryF10(body interface{}) (*TQLEXResponse, error) {
 
 	// Try TCP first with panic recovery
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
-		if result, err := uc.tryTCPF10(code, market); err == nil {
+		result, err := uc.tryTCPF10(code, market)
+		if err == nil && result != nil {
 			return result, nil
 		}
 	}
 
 	// Fall back to HTTP TQLEX
-	return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.TdxSharePCCW", body)
+	if uc.hasHTTP() {
+		return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.TdxSharePCCW", body)
+	}
+	return nil, fmt.Errorf("F10: TCP failed and no HTTP client (missing TDX_TOKEN)")
 }
 
 // tryTCPF10 attempts to get F10 info via TCP, recovering from panics.
@@ -462,11 +547,15 @@ func (uc *UnifiedClient) queryCapitalFlow(body interface{}) (*TQLEXResponse, err
 		market = v
 	}
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
-		if result, err := uc.tryTCPCapitalFlow(code, market); err == nil {
+		result, err := uc.tryTCPCapitalFlow(code, market)
+		if err == nil && result != nil {
 			return result, nil
 		}
 	}
-	return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBCapitalFlow", body)
+	if uc.hasHTTP() {
+		return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBCapitalFlow", body)
+	}
+	return nil, fmt.Errorf("capital flow: TCP failed and no HTTP client (missing TDX_TOKEN)")
 }
 
 func (uc *UnifiedClient) tryTCPCapitalFlow(code string, market int) (*TQLEXResponse, error) {
@@ -507,11 +596,33 @@ func (uc *UnifiedClient) queryBoardList(body interface{}) (*TQLEXResponse, error
 		bt = BlockIndustry
 	}
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
-		if result, err := uc.tryTCPBoardList(bt, count); err == nil {
+		result, err := uc.tryTCPBoardList(bt, count)
+		if err == nil && result != nil {
 			return result, nil
 		}
 	}
-	return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBBoardList", body)
+
+	// Fallback: East Money scraper (no token required)
+	uc.initScrapers()
+	if uc.eastMoneyScraper != nil {
+		boardTypeStr := "industry"
+		if bt == BlockConcept {
+			boardTypeStr = "concept"
+		}
+		boards, err := uc.eastMoneyScraper.SectorBoards(boardTypeStr)
+		if err == nil && len(boards) > 0 {
+			if count > 0 && len(boards) > count {
+				boards = boards[:count]
+			}
+			result, _ := json.Marshal(boards)
+			return &TQLEXResponse{Data: json.RawMessage(result)}, nil
+		}
+	}
+
+	if uc.hasHTTP() {
+		return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBBoardList", body)
+	}
+	return nil, fmt.Errorf("board list: TCP failed and no HTTP client and scraper unavailable")
 }
 
 func (uc *UnifiedClient) tryTCPBoardList(bt BlockType, count int) (*TQLEXResponse, error) {
@@ -542,11 +653,15 @@ func (uc *UnifiedClient) queryBoardMembers(body interface{}) (*TQLEXResponse, er
 	}
 	_ = count
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
-		if result, err := uc.tryTCPBoardMembers(code); err == nil {
+		result, err := uc.tryTCPBoardMembers(code)
+		if err == nil && result != nil {
 			return result, nil
 		}
 	}
-	return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBBoardMembers", body)
+	if uc.hasHTTP() {
+		return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBBoardMembers", body)
+	}
+	return nil, fmt.Errorf("board members: TCP failed and no HTTP client (missing TDX_TOKEN)")
 }
 
 func (uc *UnifiedClient) tryTCPBoardMembers(boardCode string) (*TQLEXResponse, error) {
@@ -579,18 +694,25 @@ func (uc *UnifiedClient) queryBoardRanking(body interface{}) (*TQLEXResponse, er
 	_ = boardType
 	_ = topN
 	_ = sortBy
-	// Board ranking not available via TCP — fall back to scraper or HTTP
-	return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBBoardRanking", body)
+	// Board ranking not available via TCP — fall back to HTTP or scraper
+	if uc.hasHTTP() {
+		return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBBoardRanking", body)
+	}
+	return nil, fmt.Errorf("board ranking not available without HTTP client (missing TDX_TOKEN)")
 }
 
 // queryServerInfo handles PBServerInfo via TCP.
 func (uc *UnifiedClient) queryServerInfo(body interface{}) (*TQLEXResponse, error) {
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
-		if result, err := uc.tryTCPServerInfo(); err == nil {
+		result, err := uc.tryTCPServerInfo()
+		if err == nil && result != nil {
 			return result, nil
 		}
 	}
-	return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBServerInfo", body)
+	if uc.hasHTTP() {
+		return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBServerInfo", body)
+	}
+	return nil, fmt.Errorf("server info: TCP failed and no HTTP client (missing TDX_TOKEN)")
 }
 
 func (uc *UnifiedClient) tryTCPServerInfo() (*TQLEXResponse, error) {
@@ -617,11 +739,15 @@ func (uc *UnifiedClient) querySymbolInfo(body interface{}) (*TQLEXResponse, erro
 		market = v
 	}
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
-		if result, err := uc.tryTCPSymbolInfo(code, market); err == nil {
+		result, err := uc.tryTCPSymbolInfo(code, market)
+		if err == nil && result != nil {
 			return result, nil
 		}
 	}
-	return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBSymbolInfo", body)
+	if uc.hasHTTP() {
+		return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBSymbolInfo", body)
+	}
+	return nil, fmt.Errorf("symbol info: TCP failed and no HTTP client (missing TDX_TOKEN)")
 }
 
 func (uc *UnifiedClient) tryTCPSymbolInfo(code string, market int) (*TQLEXResponse, error) {
@@ -652,8 +778,11 @@ func (uc *UnifiedClient) queryBelongBoard(body interface{}) (*TQLEXResponse, err
 	}
 	_ = code
 	_ = market
-	// Belong board not directly available via TCP — fall back to scraper
-	return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBBelongBoard", body)
+	// Belong board not directly available via TCP — fall back to HTTP
+	if uc.hasHTTP() {
+		return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBBelongBoard", body)
+	}
+	return nil, fmt.Errorf("belong board not available without HTTP client (missing TDX_TOKEN)")
 }
 
 // queryUnusual handles PBUnusual via TCP.
@@ -671,11 +800,15 @@ func (uc *UnifiedClient) queryUnusual(body interface{}) (*TQLEXResponse, error) 
 		count = c
 	}
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
-		if result, err := uc.tryTCPUnusual(market, count); err == nil {
+		result, err := uc.tryTCPUnusual(market, count)
+		if err == nil && result != nil {
 			return result, nil
 		}
 	}
-	return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBUnusual", body)
+	if uc.hasHTTP() {
+		return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBUnusual", body)
+	}
+	return nil, fmt.Errorf("unusual: TCP failed and no HTTP client (missing TDX_TOKEN)")
 }
 
 func (uc *UnifiedClient) tryTCPUnusual(market, count int) (*TQLEXResponse, error) {
@@ -696,11 +829,15 @@ func (uc *UnifiedClient) tryTCPUnusual(market, count int) (*TQLEXResponse, error
 // queryMarketStat handles PBMarketStat via TCP.
 func (uc *UnifiedClient) queryMarketStat(body interface{}) (*TQLEXResponse, error) {
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
-		if result, err := uc.tryTCPMarketStat(); err == nil {
+		result, err := uc.tryTCPMarketStat()
+		if err == nil && result != nil {
 			return result, nil
 		}
 	}
-	return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBMarketStat", body)
+	if uc.hasHTTP() {
+		return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBMarketStat", body)
+	}
+	return nil, fmt.Errorf("market stat: TCP failed and no HTTP client (missing TDX_TOKEN)")
 }
 
 func (uc *UnifiedClient) tryTCPMarketStat() (*TQLEXResponse, error) {
@@ -733,11 +870,15 @@ func (uc *UnifiedClient) querySecurityList(body interface{}) (*TQLEXResponse, er
 		start = uint16(sv)
 	}
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
-		if result, err := uc.tryTCPSecurityList(market, start); err == nil {
+		result, err := uc.tryTCPSecurityList(market, start)
+		if err == nil && result != nil {
 			return result, nil
 		}
 	}
-	return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBSecurityList", body)
+	if uc.hasHTTP() {
+		return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBSecurityList", body)
+	}
+	return nil, fmt.Errorf("security list: TCP failed and no HTTP client (missing TDX_TOKEN)")
 }
 
 func (uc *UnifiedClient) tryTCPSecurityList(market int, start uint16) (*TQLEXResponse, error) {
@@ -767,11 +908,15 @@ func (uc *UnifiedClient) queryFinanceInfo(body interface{}) (*TQLEXResponse, err
 		market = v
 	}
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
-		if result, err := uc.tryTCPFinanceInfo(code, market); err == nil {
+		result, err := uc.tryTCPFinanceInfo(code, market)
+		if err == nil && result != nil {
 			return result, nil
 		}
 	}
-	return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBGetFinanceInfo", body)
+	if uc.hasHTTP() {
+		return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBGetFinanceInfo", body)
+	}
+	return nil, fmt.Errorf("finance info: TCP failed and no HTTP client (missing TDX_TOKEN)")
 }
 
 func (uc *UnifiedClient) tryTCPFinanceInfo(code string, market int) (*TQLEXResponse, error) {
@@ -796,6 +941,9 @@ func (uc *UnifiedClient) tryTCPFinanceInfo(code string, market int) (*TQLEXRespo
 
 // RAGQuery implements the Client interface.
 func (uc *UnifiedClient) RAGQuery(ctx context.Context, query string, topK int) (*RAGResponse, error) {
+	if !uc.hasHTTP() {
+		return nil, fmt.Errorf("RAG query requires HTTP client (missing TDX_TOKEN)")
+	}
 	return uc.httpClient.RAGQuery(ctx, query, topK)
 }
 
@@ -848,9 +996,13 @@ func (uc *UnifiedClient) queryFSTick(body interface{}) (*TQLEXResponse, error) {
 
 	// Try TCP first with panic recovery
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
-		if result, err := uc.tryTCPFSTick(code, market); err == nil {
+		result, err := uc.tryTCPFSTick(code, market)
+		if err == nil && result != nil {
 			return result, nil
 		}
+	}
+	if uc.hasHTTP() {
+		return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBFSTick", body)
 	}
 
 	setcodeStr := fmt.Sprintf("%d.%s", market, code)
@@ -905,9 +1057,13 @@ func (uc *UnifiedClient) queryTrans(body interface{}) (*TQLEXResponse, error) {
 
 	// Try TCP first with panic recovery
 	if uc.tcpClient != nil && uc.tcpClient.IsConnected() {
-		if result, err := uc.tryTCPTrans(code, market, count); err == nil {
+		result, err := uc.tryTCPTrans(code, market, count)
+		if err == nil && result != nil {
 			return result, nil
 		}
+	}
+	if uc.hasHTTP() {
+		return uc.httpClient.TQLEXQuery(context.Background(), "TdxShare.PBTrans", body)
 	}
 
 	setcodeStr := fmt.Sprintf("%d.%s", market, code)
@@ -1082,30 +1238,33 @@ func PeriodCodeToString(v interface{}) string {
 }
 
 // tcpPeriodToCategory converts a TCP period string to gotdx period category.
+// Categories must match GotKLine's periodMap: 1min=1, 5min=2, ..., day=6, week=7, month=8.
 func tcpPeriodToCategory(period string) uint16 {
 	switch period {
 	case "1min":
-		return 8
-	case "5min":
-		return 0
-	case "15min":
 		return 1
-	case "30min":
+	case "5min":
 		return 2
-	case "60min":
+	case "15min":
 		return 3
-	case "day":
+	case "30min":
 		return 4
-	case "week":
+	case "60min":
 		return 5
-	case "month":
+	case "day":
 		return 6
+	case "week":
+		return 7
+	case "month":
+		return 8
 	case "quarter":
-		return 13
+		return 9
+	case "halfyear":
+		return 10
 	case "year":
 		return 11
 	default:
-		return 4
+		return 6 // default to day
 	}
 }
 
@@ -1229,6 +1388,11 @@ func (uc *UnifiedClient) initScrapers() {
 		uc.sinaClient = scraper.NewSinaClient()
 		uc.tableParser = scraper.NewTableParser()
 		uc.ocrClient = scraper.NewOCRClient()
+		uc.northScraper = scraper.NewNorthboundScraper()
+		uc.useNorthScraper = true
+		uc.macroScraper = scraper.NewMacroScraper("")
+		uc.fundNavClient = scraper.NewFundNavClient()
+		uc.marginTradeClient = scraper.NewMarginTradeWebClient()
 		if s, err := scraper.NewScraper(30 * time.Second); err == nil {
 			uc.webScraper = s
 		}
@@ -1505,4 +1669,113 @@ func (uc *UnifiedClient) ChanlunBuildZhongShu(code string, market, count int) ([
 // Chanlun Find MaiMaiDian delegation
 func (uc *UnifiedClient) ChanlunFindMaiMaiDian(code string, market, count int) ([]chanlun.MaiMaiDian, error) {
 	return nil, fmt.Errorf("chanlun find maimaidian requires kline data - use TCP client or collector with KlineQuery")
+}
+
+// IPOCalendar delegation
+func (uc *UnifiedClient) IPOCalendar(date string, limit int) ([]map[string]interface{}, error) {
+	uc.initScrapers()
+	if uc.eastMoneyScraper == nil {
+		return nil, fmt.Errorf("east money scraper not configured")
+	}
+	return uc.eastMoneyScraper.IPOCalendar(date, limit)
+}
+
+// Call Auction delegation
+func (uc *UnifiedClient) GetCallAuction(code string, market int) ([]proto.AuctionData, error) {
+	return uc.tcpClient.GetAuction(code, market)
+}
+
+// History Minute delegation
+func (uc *UnifiedClient) GetHistoryMinute(code string, market int, date string) ([]proto.HistoryMinuteTimeData, error) {
+	dateNum, err := strconv.ParseUint(date, 10, 32)
+	if err != nil || len(date) != 8 {
+		return nil, fmt.Errorf("invalid date format: %s (use YYYYMMDD)", date)
+	}
+	var m types.Market
+	switch market {
+	case 0:
+		m = types.MarketSZ
+	case 1:
+		m = types.MarketSH
+	default:
+		return nil, fmt.Errorf("unknown market: %d", market)
+	}
+	reply, err := uc.tcpClient.mainClient.GetHistoryMinuteTimeData(uint32(dateNum), m.Uint8(), code)
+	if err != nil {
+		return nil, err
+	}
+	return reply.List, nil
+}
+
+// History Trade delegation
+func (uc *UnifiedClient) GetHistoryTrade(code string, market int, date string, count int) ([]proto.HistoryTransactionData, error) {
+	dateNum, err := strconv.ParseUint(date, 10, 32)
+	if err != nil || len(date) != 8 {
+		return nil, fmt.Errorf("invalid date format: %s (use YYYYMMDD)", date)
+	}
+	var m types.Market
+	switch market {
+	case 0:
+		m = types.MarketSZ
+	case 1:
+		m = types.MarketSH
+	default:
+		return nil, fmt.Errorf("unknown market: %d", market)
+	}
+	if count > 500 {
+		count = 500
+	}
+	reply, err := uc.tcpClient.mainClient.GetHistoryTransactionData(uint32(dateNum), m.Uint8(), code, 0, uint16(count))
+	if err != nil {
+		return nil, err
+	}
+	return reply.List, nil
+}
+
+// Symbol Info delegation
+func (uc *UnifiedClient) GetSymbolInfo(code string, market int) (*proto.MACSymbolInfoReply, error) {
+	return uc.tcpClient.GetSymbolInfo(code, market)
+}
+
+// Finance Info delegation
+func (uc *UnifiedClient) GetFinanceInfo(code string, market int) (*proto.GetFinanceInfoReply, error) {
+	return uc.tcpClient.GetFinanceInfo(code, market)
+}
+
+// Index KLine delegation
+func (uc *UnifiedClient) GetIndexKLine(code string, market int, period int, count int) ([]proto.IndexBar, error) {
+	var m types.Market
+	switch market {
+	case 0:
+		m = types.MarketSZ
+	case 1:
+		m = types.MarketSH
+	default:
+		m = types.MarketSH
+	}
+	reply, err := uc.tcpClient.mainClient.GetIndexBars(uint16(period), m.Uint8(), code, 0, uint16(count))
+	if err != nil {
+		return nil, err
+	}
+	return reply.List, nil
+}
+
+// Board Members delegation
+func (uc *UnifiedClient) GetBoardMembers(boardSymbol string, count int) ([]proto.MACBoardMemberItem, error) {
+	return uc.tcpClient.macClient.MACBoardMembers(boardSymbol, uint32(count))
+}
+
+// Belong Board delegation
+func (uc *UnifiedClient) GetSymbolBelongBoard(code string, market uint8) ([]proto.MACBelongBoardItem, error) {
+	return uc.tcpClient.macClient.MACSymbolBelongBoard(code, market)
+}
+
+// Realtime Quote delegation
+func (uc *UnifiedClient) GetRealtimeQuote(code string, market int) (*proto.SecurityQuote, error) {
+	return uc.tcpClient.GetQuote(code, market)
+}
+
+// MAC Board List delegation
+func (uc *UnifiedClient) GetMACBoardList(boardType uint16, count uint32) ([]proto.MACBoardListItem, error) {
+	return uc.tcpClient.macClient.MACBoardList(boardType, count)
 }

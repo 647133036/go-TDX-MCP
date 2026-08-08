@@ -28,6 +28,7 @@ func (r *FunctionRegistry) registerBuiltin() {
 	r.Register("ROUND", "math", "1", "四舍五入", fnROUND)
 	r.Register("ROUND2", "math", "2", "指定小数位四舍五入", fnROUND2)
 	r.Register("SIGN", "math", "1", "符号函数", fnSIGN)
+	r.Register("RGB", "math", "3", "RGB颜色值合成 RGB(r,g,b)（用于COLOR/BKCOLOR）", fnRGB)
 	r.Register("SIN", "math", "1", "正弦", fnSIN)
 	r.Register("COS", "math", "1", "余弦", fnCOS)
 	r.Register("TAN", "math", "1", "正切", fnTAN)
@@ -96,11 +97,15 @@ func (r *FunctionRegistry) registerBuiltin() {
 	r.Register("LAST", "logical", "3", "区间内条件持续成立", fnLAST)
 	r.Register("FILTER", "logical", "2", "信号过滤", fnFILTER)
 
+	// RSI — implemented here so that RSI(data, period) syntax works
+	// builtin_complex.go does NOT register RSI to avoid overwriting this.
+	r.Register("RSI", "logical", "2", "相对强弱指标 RSI(data,N)", fnRSI)
+
 	// Drawing functions
 	r.Register("DRAWTEXT", "draw", "3", "文字标注", fnDRAWTEXT)
 	r.Register("DRAWICON", "draw", "3", "图标标注", fnDRAWICON)
 	r.Register("DRAWNUMBER", "draw", "3", "数字标注", fnDRAWNUMBER)
-	r.Register("STICKLINE", "draw", "5", "柱线", fnSTICKLINE)
+	r.Register("STICKLINE", "draw", "5~6", "柱线（condition,top,bottom,width,empty[,color]）", fnSTICKLINE)
 	r.Register("DRAWLINE", "draw", "5", "连接直线", fnDRAWLINE)
 	r.Register("POLYLINE", "draw", "2", "折线", fnPOLYLINE)
 	r.Register("DRAWBAND", "draw", "4", "带状区域", fnDRAWBAND)
@@ -122,11 +127,19 @@ func fnMA(args []*Value, _ []indicator.Bar) (*Value, error) {
 		return nil, NewEvalError("MA second argument must be a number")
 	}
 	n := int(period.Single)
-	if n <= 0 || n > len(data.Array) {
-		return nil, NewEvalError(fmt.Sprintf("MA period must be between 1 and %d", len(data.Array)))
+	if n <= 0 {
+		return nil, NewEvalError("MA period must be positive")
 	}
 
 	result := make([]float64, len(data.Array))
+	// If period exceeds bar count, all values are NaN
+	if n > len(data.Array) {
+		for i := range result {
+			result[i] = math.NaN()
+		}
+		return NewArrayValue(result), nil
+	}
+
 	sum := 0.0
 	nanCount := 0
 	for i, value := range data.Array {
@@ -168,19 +181,25 @@ func fnEMA(args []*Value, _ []indicator.Bar) (*Value, error) {
 		return nil, NewEvalError("EMA second argument must be a number")
 	}
 	n := int(period.Single)
-	if n <= 0 || n > len(data.Array) {
-		return nil, NewEvalError(fmt.Sprintf("EMA period must be between 1 and %d", len(data.Array)))
+	if n <= 0 {
+		return nil, NewEvalError("EMA period must be positive")
 	}
 
 	result := make([]float64, len(data.Array))
+	// If period exceeds bar count, all values are NaN
+	if n > len(data.Array) {
+		for i := range result {
+			result[i] = math.NaN()
+		}
+		return NewArrayValue(result), nil
+	}
+
 	alpha := 2.0 / float64(n+1)
 	var seedSum float64
 	for i := 0; i < n && i < len(data.Array); i++ {
 		seedSum += data.Array[i]
 	}
-	if len(data.Array) >= n {
-		result[n-1] = seedSum / float64(n)
-	}
+	result[n-1] = seedSum / float64(n)
 	for i := n; i < len(data.Array); i++ {
 		result[i] = alpha*data.Array[i] + (1-alpha)*result[i-1]
 	}
@@ -355,6 +374,31 @@ func fnSIGN(args []*Value, _ []indicator.Bar) (*Value, error) {
 	})
 }
 
+// fnRGB composes a color value from r, g, b (0-255 each) for BKCOLOR etc.
+// RGB(r,g,b) = r*65536 + g*256 + b, all broadcast as array-compatible.
+func fnRGB(args []*Value, _ []indicator.Bar) (*Value, error) {
+	if len(args) != 3 {
+		return nil, NewEvalError("RGB requires 3 arguments")
+	}
+	var r, g, b *Value
+	r, g, b = args[0], args[1], args[2]
+	if !r.IsArray && !g.IsArray && !b.IsArray {
+		rv, gv, bv := r.Single, g.Single, b.Single
+		return NewSingleValue(rv*65536 + gv*256 + bv), nil
+	}
+	if r.IsArray && g.IsArray && b.IsArray {
+		if len(r.Array) != len(g.Array) || len(r.Array) != len(b.Array) {
+			return nil, NewEvalError("RGB: array length mismatch")
+		}
+		out := make([]float64, len(r.Array))
+		for i := range r.Array {
+			out[i] = r.Array[i]*65536 + g.Array[i]*256 + b.Array[i]
+		}
+		return NewArrayValue(out), nil
+	}
+	return nil, NewEvalError("RGB: all arguments must be numeric (scalar or array of same length)")
+}
+
 func fnSIN(args []*Value, _ []indicator.Bar) (*Value, error) { return numericUnaryFunc(args, "SIN", math.Sin) }
 func fnCOS(args []*Value, _ []indicator.Bar) (*Value, error) { return numericUnaryFunc(args, "COS", math.Cos) }
 func fnTAN(args []*Value, _ []indicator.Bar) (*Value, error) { return numericUnaryFunc(args, "TAN", math.Tan) }
@@ -516,8 +560,26 @@ func fnCROSS(args []*Value, _ []indicator.Bar) (*Value, error) {
 		return nil, NewEvalError("CROSS requires 2 arguments")
 	}
 	a, b := args[0], args[1]
-	if !a.IsArray || !b.IsArray {
-		return nil, NewEvalError("CROSS requires array arguments")
+
+	// Broadcast scalars to arrays of matching length
+	if !a.IsArray {
+		if !b.IsArray {
+			return NewSingleValue(0), nil
+		}
+		s := a.Single
+		arr := make([]float64, len(b.Array))
+		for i := range arr {
+			arr[i] = s
+		}
+		a = NewArrayValue(arr)
+	}
+	if !b.IsArray {
+		s := b.Single
+		arr := make([]float64, len(a.Array))
+		for i := range arr {
+			arr[i] = s
+		}
+		b = NewArrayValue(arr)
 	}
 	if len(a.Array) != len(b.Array) {
 		return nil, NewEvalError("CROSS: array length mismatch")
@@ -1248,6 +1310,110 @@ func fnFILTER(args []*Value, _ []indicator.Bar) (*Value, error) {
 	return NewArrayValue(result), nil
 }
 
+// fnRSI implements Relative Strength Index.
+// RSI()          → RSI of Close, period=14 (uses bars)
+// RSI(N)         → RSI of Close, period=N (uses bars)
+// RSI(C,N)       → RSI of C over N periods
+// Uses Wilder's smoothing: SMA seed for first period, then exponential smoothing.
+func fnRSI(args []*Value, bars []indicator.Bar) (*Value, error) {
+	var data []float64
+	var n int
+
+	switch len(args) {
+	case 0:
+		data = make([]float64, len(bars))
+		for i, b := range bars {
+			data[i] = b.Close
+		}
+		n = 14
+	case 1:
+		data = make([]float64, len(bars))
+		for i, b := range bars {
+			data[i] = b.Close
+		}
+		if args[0].IsArray {
+			data = args[0].Array
+		} else {
+			n = int(args[0].Single)
+			if n <= 0 {
+				n = 14
+			}
+		}
+		if n == 0 {
+			n = 14
+		}
+	case 2:
+		if !args[0].IsArray {
+			return nil, NewEvalError("RSI first argument must be an array")
+		}
+		data = args[0].Array
+		if args[1].IsArray {
+			return nil, NewEvalError("RSI second argument must be a number")
+		}
+		n = int(args[1].Single)
+	default:
+		return nil, NewEvalError("RSI accepts 0-2 arguments")
+	}
+
+	if n <= 0 || n > len(data) {
+		return nil, NewEvalError(fmt.Sprintf("RSI period must be between 1 and %d", len(data)))
+	}
+
+	result := make([]float64, len(data))
+	if len(data) < 2 {
+		return NewArrayValue(result), nil
+	}
+
+	// SMA seed: compute average gain/loss over first n changes
+	var seedGain, seedLoss float64
+	for i := 1; i < n+1 && i < len(data); i++ {
+		change := data[i] - data[i-1]
+		if math.IsNaN(change) || math.IsNaN(data[i]) || math.IsNaN(data[i-1]) {
+			result[i] = math.NaN()
+			continue
+		}
+		if change > 0 {
+			seedGain += change
+		} else {
+			seedLoss += -change
+		}
+	}
+	avgGain := seedGain / float64(n)
+	avgLoss := seedLoss / float64(n)
+
+	for i := 1; i < len(data); i++ {
+		if math.IsNaN(data[i]) || math.IsNaN(data[i-1]) {
+			result[i] = math.NaN()
+			if i >= n {
+				avgGain = avgGain * float64(n-1) / float64(n)
+				avgLoss = avgLoss * float64(n-1) / float64(n)
+			}
+			continue
+		}
+		change := data[i] - data[i-1]
+		if i < n {
+			if change > 0 {
+				seedGain += change
+			} else {
+				seedLoss += -change
+			}
+			avgGain = seedGain / float64(i)
+			avgLoss = seedLoss / float64(i)
+		} else {
+			avgGain = (avgGain*float64(n-1) + math.Max(change, 0)) / float64(n)
+			avgLoss = (avgLoss*float64(n-1) + math.Max(-change, 0)) / float64(n)
+		}
+
+		if avgLoss == 0 {
+			result[i] = 100
+		} else {
+			rs := avgGain / avgLoss
+			result[i] = 100 - 100/(1+rs)
+		}
+	}
+	return NewArrayValue(result), nil
+}
+
 func fnBETWEEN(args []*Value, _ []indicator.Bar) (*Value, error) {
 	if len(args) != 3 {
 		return nil, NewEvalError("BETWEEN requires 3 arguments")
@@ -1434,15 +1600,24 @@ func fnDRAWNUMBER(args []*Value, _ []indicator.Bar) (*Value, error) {
 }
 
 func fnSTICKLINE(args []*Value, _ []indicator.Bar) (*Value, error) {
-	if len(args) != 5 {
-		return nil, NewEvalError("STICKLINE requires 5 arguments")
+	if len(args) < 5 || len(args) > 6 {
+		return nil, NewEvalError("STICKLINE requires 5 or 6 arguments")
 	}
 	condition, price1, price2, width, empty := args[0], args[1], args[2], args[3], args[4]
+	var color *Value
+	if len(args) == 6 {
+		color = args[5]
+	}
 	if !condition.IsArray {
 		return nil, NewEvalError("STICKLINE first argument must be an array")
 	}
 	if err := validateDrawingNumericArgs("STICKLINE", len(condition.Array), price1, price2, width, empty); err != nil {
 		return nil, err
+	}
+	if color != nil {
+		if err := validateDrawingNumericArgs("STICKLINE", len(condition.Array), color); err != nil {
+			return nil, err
+		}
 	}
 
 	drawings := make([]DrawingEvent, 0, truthyCount(condition.Array))
@@ -1450,6 +1625,7 @@ func fnSTICKLINE(args []*Value, _ []indicator.Bar) (*Value, error) {
 		if !isTruthy(cond) {
 			continue
 		}
+		meta := make(map[string]string)
 		event := DrawingEvent{
 			Function: "STICKLINE",
 			BarIndex: i,
@@ -1460,6 +1636,14 @@ func fnSTICKLINE(args []*Value, _ []indicator.Bar) (*Value, error) {
 				"empty":  scalarOrArrayAt(empty, i),
 			},
 		}
+		if color != nil {
+			if color.IsString {
+				meta["color"] = textValueAt(color, i)
+			} else {
+				event.Values["color"] = scalarOrArrayAt(color, i)
+			}
+		}
+		event.Meta = meta
 		drawings = append(drawings, event)
 	}
 	return NewDrawingValue(drawings), nil

@@ -50,15 +50,11 @@ go build -o go-tdx-mcp .
 
 ### 配置
 
-创建 `config.json`：
+创建 `config.json`（所有字段可选，**无需 token 即可运行**）：
 
 ```json
 {
-  "token": "your_tdx_token",
-  "timeout": 30,
-  "web_port": 8000,
-  "tdx_host": "",
-  "tdx_port": 0
+  "timeout": 30
 }
 ```
 
@@ -66,9 +62,9 @@ go build -o go-tdx-mcp .
 
 | 变量 | 说明 |
 |------|------|
-| `TDX_TOKEN` | 通达信 HTTP API Token |
-| `TDX_HOST` | 通达信 TCP 服务器地址（可选） |
+| `TDX_HOST` | 通达信 TCP 服务器地址（可选，不配则自动选择最快节点） |
 | `TDX_PORT` | 通达信 TCP 服务器端口（可选） |
+| `TDX_TOKEN` | 通达信 HTTP API Token（可选，仅用于高级功能如 RAG 问答/自然语言选股） |
 
 环境变量优先级高于配置文件。
 
@@ -82,13 +78,13 @@ go build -o go-tdx-mcp .
     "tdx-finance": {
       "command": "/path/to/go-tdx-mcp",
       "args": [],
-      "env": {
-        "TDX_TOKEN": "your_token"
-      }
+      "env": {}
     }
   }
 }
 ```
+
+> 无需配置 `TDX_TOKEN`。默认使用通达信 TCP 直连（自动选择最快节点），覆盖实时行情、K 线、板块、缠论、指标等全部功能。如需 RAG 问答/自然语言选股，可添加 `TDX_TOKEN`。
 
 ## 工具分类
 
@@ -241,8 +237,8 @@ tdx_ocr_recognize    OCR 图像识别
 
 | 数据源 | 用途 | 状态 |
 |--------|------|------|
-| **TDX TCP** | 通达信行情服务器（实时行情、K 线、财务、缠论数据） | 可用 |
-| **TDX HTTP (TQLEX)** | 通达信 HTTP 网关（tdxhub.icfqs.com:7615，行情、K 线、基础数据） | 可用 |
+| **TDX TCP** | 通达信行情服务器（实时行情、K 线、财务、缠论数据） | 可用，**无需 token** |
+| **TDX HTTP (TQLEX)** | 通达信 HTTP 网关（tdxhub.icfqs.com:7615，RAG 问答、自然语言选股） | **需 TDX_TOKEN** |
 | **东方财富 (push2delay)** | 实时行情、板块、资金流（延迟数据） | 可用 |
 | **东方财富 (datacenter)** | 财务数据、宏观数据、公告 | 可用 |
 | **新浪财经** | 行情数据补充 | 可用 |

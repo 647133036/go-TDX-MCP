@@ -129,7 +129,7 @@ func buildMCPServer(client *tdx.UnifiedClient) *server.MCPServer {
 			fmt.Fprintf(os.Stderr, "警告: 核心工具 '%s' 无对应处理器\n", tool.Name)
 			continue
 		}
-		mcpServer.AddTool(tool, tdx.CreateToolHandler(client, h))
+		mcpServer.AddTool(tool, tdx.CreateHandler(client, h))
 	}
 
 	for _, tool := range tdx.GetAllExpandedTools() {
@@ -138,7 +138,7 @@ func buildMCPServer(client *tdx.UnifiedClient) *server.MCPServer {
 			fmt.Fprintf(os.Stderr, "警告: 扩展工具 '%s' 无对应处理器\n", tool.Name)
 			continue
 		}
-		mcpServer.AddTool(tool, tdx.CreateToolHandler(client, h))
+		mcpServer.AddTool(tool, tdx.CreateHandler(client, h))
 	}
 
 	for _, tool := range tdx.GetAllV3Tools() {
@@ -147,7 +147,7 @@ func buildMCPServer(client *tdx.UnifiedClient) *server.MCPServer {
 			fmt.Fprintf(os.Stderr, "警告: V3工具 '%s' 无对应处理器\n", tool.Name)
 			continue
 		}
-		mcpServer.AddTool(tool, tdx.CreateToolHandler(client, h))
+		mcpServer.AddTool(tool, tdx.CreateHandler(client, h))
 	}
 
 	for _, tool := range tdx.GetAllNewTools() {
@@ -156,7 +156,7 @@ func buildMCPServer(client *tdx.UnifiedClient) *server.MCPServer {
 			fmt.Fprintf(os.Stderr, "警告: 新增工具 '%s' 无对应处理器\n", tool.Name)
 			continue
 		}
-		mcpServer.AddTool(tool, tdx.CreateToolHandler(client, h))
+		mcpServer.AddTool(tool, tdx.CreateHandler(client, h))
 	}
 
 	mcpServer.AddPrompts(tdx.AllServerPrompts()...)

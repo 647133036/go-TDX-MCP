@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -110,24 +111,24 @@ func (e *EastMoneyScraper) RealtimeQuote(codes []string) ([]map[string]interface
 	}
 
 	type rawItem struct {
-		F12 string  `json:"f12"`
-		F14 string  `json:"f14"`
-		F2  float64 `json:"f2"`
-		F3  float64 `json:"f3"`
-		F4  float64 `json:"f4"`
-		F5  float64 `json:"f5"`
-		F6  float64 `json:"f6"`
-		F7  float64 `json:"f7"`
-		F8  float64 `json:"f8"`
-		F9  float64 `json:"f9"`
-		F10 float64 `json:"f10"`
-		F15 float64 `json:"f15"`
-		F16 float64 `json:"f16"`
-		F17 float64 `json:"f17"`
-		F18 float64 `json:"f18"`
-		F20 float64 `json:"f20"`
-		F21 float64 `json:"f21"`
-		F23 float64 `json:"f23"`
+		F12 interface{} `json:"f12"`
+		F14 interface{} `json:"f14"`
+		F2  interface{} `json:"f2"`
+		F3  interface{} `json:"f3"`
+		F4  interface{} `json:"f4"`
+		F5  interface{} `json:"f5"`
+		F6  interface{} `json:"f6"`
+		F7  interface{} `json:"f7"`
+		F8  interface{} `json:"f8"`
+		F9  interface{} `json:"f9"`
+		F10 interface{} `json:"f10"`
+		F15 interface{} `json:"f15"`
+		F16 interface{} `json:"f16"`
+		F17 interface{} `json:"f17"`
+		F18 interface{} `json:"f18"`
+		F20 interface{} `json:"f20"`
+		F21 interface{} `json:"f21"`
+		F23 interface{} `json:"f23"`
 	}
 
 	var parsed struct {
@@ -142,27 +143,54 @@ func (e *EastMoneyScraper) RealtimeQuote(codes []string) ([]map[string]interface
 	results := make([]map[string]interface{}, 0, len(parsed.Data.Diff))
 	for _, item := range parsed.Data.Diff {
 		results = append(results, map[string]interface{}{
-			"stock_code":    item.F12,
-			"stock_name":    item.F14,
-			"price":         item.F2,
-			"change_pct":    item.F3,
-			"change_amt":    item.F4,
-			"volume":        item.F5,
-			"amount":        item.F6,
-			"amplitude":     item.F7,
-			"turnover_rate": item.F8,
-			"pe_ttm":        item.F9,
-			"volume_ratio":  item.F10,
-			"high":          item.F15,
-			"low":           item.F16,
-			"open":          item.F17,
-			"pre_close":     item.F18,
-			"total_market":  item.F20,
-			"circ_market":   item.F21,
-			"pb":            item.F23,
+			"stock_code":    strVal(item.F12),
+			"stock_name":    strVal(item.F14),
+			"price":         numVal(item.F2),
+			"change_pct":    numVal(item.F3),
+			"change_amt":    numVal(item.F4),
+			"volume":        numVal(item.F5),
+			"amount":        numVal(item.F6),
+			"amplitude":     numVal(item.F7),
+			"turnover_rate": numVal(item.F8),
+			"pe_ttm":        numVal(item.F9),
+			"volume_ratio":  numVal(item.F10),
+			"high":          numVal(item.F15),
+			"low":           numVal(item.F16),
+			"open":          numVal(item.F17),
+			"pre_close":     numVal(item.F18),
+			"total_market":  numVal(item.F20),
+			"circ_market":   numVal(item.F21),
+			"pb":            numVal(item.F23),
 		})
 	}
 	return results, nil
+}
+
+func strVal(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+func numVal(v interface{}) float64 {
+	if v == nil {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return n
+	case float32:
+		return float64(n)
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	case string:
+		f, _ := strconv.ParseFloat(n, 64)
+		return f
+	}
+	return 0
 }
 
 // SectorBoards fetches all sector boards (industry/concept/region).
@@ -1369,6 +1397,108 @@ func (e *EastMoneyScraper) CapitalFlow(secid string, days int) ([]map[string]int
 		}
 		results = append(results, item)
 	}
+	return results, nil
+}
+
+// IPOCalendar fetches IPO subscription calendar data from east money.
+func (e *EastMoneyScraper) IPOCalendar(date string, limit int) ([]map[string]interface{}, error) {
+	if date == "" {
+		date = time.Now().Format("20060102")
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+
+	// Use the IPO list endpoint from east money
+	// getIPOList: 新股申购列表
+	url := fmt.Sprintf(
+		"https://push2ex.eastmoney.com/getIPOList"+
+			"?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.gpgs"+
+			"&Pageindex=0&pagesize=%d&sort=date:desc&np=1",
+		limit,
+	)
+
+	body, err := e.doJSON(url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("IPO calendar query: %w", err)
+	}
+
+	var parsed struct {
+		Data struct {
+			IpoList []struct {
+				Code         string `json:"CODE"`
+				Name         string `json:"NAME"`
+				Market       int    `json:"m"`
+				SubDate      string `json:"SUB_DATE"`
+				SubLimit     string `json:"SUB_LIMIT"`
+				IssuePrice   string `json:"ISSUE_PRICE"`
+				Subscription string `json:"SUBSCRIPTION"`
+				ListDate     string `json:"LIST_DATE"`
+				IssueSize    string `json:"ISSUE_SIZE"`
+				OnlineSize   string `json:"ONLINE_SIZE"`
+				Amount       string `json:"AMOUNT"`
+				SubCode      string `json:"SUB_CODE"`
+			} `json:"ipo_list"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, fmt.Errorf("parse IPO calendar response: %w", err)
+	}
+
+	results := make([]map[string]interface{}, 0, len(parsed.Data.IpoList))
+	for _, item := range parsed.Data.IpoList {
+		// Filter by date if provided
+		if date != "" && item.SubDate != date && item.ListDate != date {
+			continue
+		}
+		results = append(results, map[string]interface{}{
+			"stock_code":     item.Code,
+			"stock_name":     item.Name,
+			"market":         item.Market,
+			"subscription_date": item.SubDate,
+			"subscription_limit": item.SubLimit,
+			"issue_price":    item.IssuePrice,
+			"subscription_code": item.SubCode,
+			"listing_date":   item.ListDate,
+			"issue_size":     item.IssueSize,
+			"online_size":    item.OnlineSize,
+			"amount":         item.Amount,
+		})
+	}
+
+	if len(results) == 0 {
+		// Fallback: try the topic IPO list endpoint
+		fallbackURL := fmt.Sprintf(
+			"https://push2ex.eastmoney.com/getTopicIPOList"+
+				"?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.gpgs"+
+				"&Pageindex=0&pagesize=%d&sort=date:desc&np=1",
+			limit,
+		)
+		body2, err := e.doJSON(fallbackURL, nil)
+		if err != nil {
+			return results, nil
+		}
+		var parsed2 struct {
+			Data struct {
+				IpoList []struct {
+					C string `json:"c"`
+					N string `json:"n"`
+					M int    `json:"m"`
+				} `json:"pool"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body2, &parsed2); err != nil {
+			return results, nil
+		}
+		for _, item := range parsed2.Data.IpoList {
+			results = append(results, map[string]interface{}{
+				"stock_code": item.C,
+				"stock_name": item.N,
+				"market":     item.M,
+			})
+		}
+	}
+
 	return results, nil
 }
 

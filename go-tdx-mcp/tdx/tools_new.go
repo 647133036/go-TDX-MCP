@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -16,7 +20,14 @@ import (
 	"github.com/tdx/go-tdx-mcp/indicator"
 	"github.com/tdx/go-tdx-mcp/scraper"
 	"github.com/tdx/go-tdx-mcp/screen"
+
+	"github.com/bensema/gotdx/proto"
 )
+
+// ipoCalendarClient is the interface for IPO calendar queries.
+type ipoCalendarClient interface {
+	IPOCalendar(date string, limit int) ([]map[string]interface{}, error)
+}
 
 const (
 	ToolFactorList       = "tdx_factor_list"
@@ -160,6 +171,13 @@ const (
 	ToolSectorRotation            = "tdx_sector_rotation"
 	ToolMarketBreadth             = "tdx_market_breadth"
 	ToolVolumePriceAnalysis       = "tdx_volume_price_analysis"
+	// TDX protocol data tools
+	ToolCallAuction               = "tdx_call_auction"
+	ToolHistoryMinute             = "tdx_history_minute"
+	ToolHistoryTrade              = "tdx_history_trade"
+	ToolStockStats                = "tdx_stock_stats"
+	ToolFinanceInfo               = "tdx_finance_info"
+	ToolIndexKline                = "tdx_index_kline"
 	// Formula engine tools
 	ToolFormulaParse   = "tdx_formula_parse"
 	ToolFormulaExecute = "tdx_formula_execute"
@@ -416,6 +434,109 @@ func NewSectorBoardStocksTool() mcp.Tool {
 	)
 }
 
+func NewCallAuctionTool() mcp.Tool {
+	return mcp.NewTool(ToolCallAuction,
+		mcp.WithDescription("集合竞价数据：获取指定股票的集合竞价成交记录"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码，如 '000001'"),
+		),
+		mcp.WithString("setcode",
+			mcp.Required(),
+			mcp.Description("市场标识: 0=深圳, 1=上海"),
+		),
+	)
+}
+
+func NewHistoryMinuteTool() mcp.Tool {
+	return mcp.NewTool(ToolHistoryMinute,
+		mcp.WithDescription("历史分时数据：获取指定股票指定交易日的分时走势图"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码，如 '000001'"),
+		),
+		mcp.WithString("setcode",
+			mcp.Required(),
+			mcp.Description("市场标识: 0=深圳, 1=上海"),
+		),
+		mcp.WithString("date",
+			mcp.Required(),
+			mcp.Description("交易日期，格式 YYYYMMDD，如 '20250101'"),
+		),
+	)
+}
+
+func NewHistoryTradeTool() mcp.Tool {
+	return mcp.NewTool(ToolHistoryTrade,
+		mcp.WithDescription("历史分笔数据：获取指定股票指定交易日的分笔成交记录"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码，如 '000001'"),
+		),
+		mcp.WithString("setcode",
+			mcp.Required(),
+			mcp.Description("市场标识: 0=深圳, 1=上海"),
+		),
+		mcp.WithString("date",
+			mcp.Required(),
+			mcp.Description("交易日期，格式 YYYYMMDD，如 '20250101'"),
+		),
+		mcp.WithNumber("count",
+			mcp.Description("返回笔数 (默认100, 最大500)"),
+		),
+	)
+}
+
+func NewStockStatsTool() mcp.Tool {
+	return mcp.NewTool(ToolStockStats,
+		mcp.WithDescription("个股统计指标：获取股票PE/区间涨跌幅/板块归属等统计指标"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码，如 '000001'"),
+		),
+		mcp.WithString("setcode",
+			mcp.Required(),
+			mcp.Description("市场标识: 0=深圳, 1=上海"),
+		),
+		mcp.WithString("metrics",
+			mcp.Description("需要查询的指标，逗号分隔: pe, change_5d, change_20d, change_ytd, belong_board, turnover (默认全部)"),
+		),
+	)
+}
+
+func NewFinanceInfoTool() mcp.Tool {
+	return mcp.NewTool(ToolFinanceInfo,
+		mcp.WithDescription("财务数据：获取股票最新财报核心指标"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("股票代码，如 '000001'"),
+		),
+		mcp.WithString("setcode",
+			mcp.Required(),
+			mcp.Description("市场标识: 0=深圳, 1=上海"),
+		),
+	)
+}
+
+func NewIndexKlineTool() mcp.Tool {
+	return mcp.NewTool(ToolIndexKline,
+		mcp.WithDescription("指数K线数据：获取指数K线历史数据"),
+		mcp.WithString("code",
+			mcp.Required(),
+			mcp.Description("指数代码，如 '000001'(上证指数), '399001'(深证成指), '399006'(创业板指)"),
+		),
+		mcp.WithString("setcode",
+			mcp.Description("市场标识: 0=深圳, 1=上海 (默认1)"),
+		),
+		mcp.WithString("period",
+			mcp.Description("K线周期: day/week/month/1min/5min/15min/30min/60min (默认day)"),
+		),
+		mcp.WithNumber("count",
+			mcp.Description("K线根数 (默认100, 最大1000)"),
+		),
+	)
+}
+
 func GetAllNewTools() []mcp.Tool {
 	return []mcp.Tool{
 		NewFactorListTool(),
@@ -557,13 +678,20 @@ func GetAllNewTools() []mcp.Tool {
 		NewSectorRotationTool(),
 		NewMarketBreadthTool(),
 		NewVolumePriceAnalysisTool(),
-		NewFormulaParseTool(),
+		// TDX protocol data tools
+		NewCallAuctionTool(),
+		NewHistoryMinuteTool(),
+		NewHistoryTradeTool(),
+		NewStockStatsTool(),
+		NewFinanceInfoTool(),
+	NewIndexKlineTool(),
+	NewFormulaParseTool(),
 		NewFormulaExecuteTool(),
 		NewFormulaListTool(),
 	}
 }
 
-func GetNewHandler(name string) ToolHandler {
+func GetNewHandler(name string) Handler {
 	switch name {
 	case ToolFactorList:
 		return HandleFactorList
@@ -841,6 +969,21 @@ func GetNewHandler(name string) ToolHandler {
 		return HandleMarketBreadth
 	case ToolVolumePriceAnalysis:
 		return HandleVolumePriceAnalysis
+	// TDX protocol data tools
+	case ToolCallAuction:
+		return HandleCallAuction
+	case ToolHistoryMinute:
+		return HandleHistoryMinute
+	case ToolHistoryTrade:
+		return HandleHistoryTrade
+	case ToolStockStats:
+		return HandleStockStats
+	case ToolFinanceInfo:
+		return HandleFinanceInfo
+	case ToolIndexKline:
+		return HandleIndexKline
+	case ToolBoardMembers:
+		return HandleBoardMembers
 	case ToolFormulaParse:
 		return HandleFormulaParse
 	case ToolFormulaExecute:
@@ -1285,13 +1428,13 @@ func HandleFundNAV(ctx context.Context, client Client, request mcp.CallToolReque
 		return mcp.NewToolResultError("fund_code 参数必填"), nil
 	}
 
-	fundClient := scraper.NewEastMoneyFundClient()
-	data, err := fundClient.GetFundNetValue(fundCode)
+	navClient := scraper.NewFundNavClient()
+	nav, err := navClient.GetLatestNAV(fundCode)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("获取基金净值失败: %v", err)), nil
 	}
 
-	return mcp.NewToolResultText(toJSON(data)), nil
+	return mcp.NewToolResultText(toJSON(nav)), nil
 }
 
 func HandleMarginTrade(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1315,17 +1458,52 @@ func HandleMarginTrade(ctx context.Context, client Client, request mcp.CallToolR
 
 func HandleDragonTiger(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	limit := 20
-	if v, ok := request.GetArguments()["limit"].(float64); ok {
-		limit = int(v)
+	if v, ok := request.GetArguments()["limit"]; ok {
+		if f, ok := v.(float64); ok && f > 0 {
+			limit = int(f)
+		}
 	}
 
+	// First try East Money datacenter API
 	dtClient := scraper.NewDragonTigerClient()
 	data, err := dtClient.GetLatest(limit)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("获取龙虎榜数据失败: %v", err)), nil
+	if err == nil && len(data) > 0 {
+		return mcp.NewToolResultText(toJSON(data)), nil
 	}
 
-	return mcp.NewToolResultText(toJSON(data)), nil
+	// Fallback: scrape market-level dragon tiger from push2delay
+	hc := &http.Client{Timeout: 10 * time.Second}
+	// Fetch today's market stats (limit up/down counts) as proxy data
+	statsURL := "https://push2delay.eastmoney.com/api/qt/ulist.np/get?fltt=2&fields=f2,f3,f4,f5,f6,f12,f14&secids=0.000001,1.600000"
+	resp, err := hc.Get(statsURL)
+	if err != nil {
+		return mcp.NewToolResultText(toJSON(map[string]interface{}{
+			"status":   "unavailable",
+			"message":  "龙虎榜数据源暂不可用，API端点已变更。返回市场概况作为替代。",
+			"data":     nil,
+			"suggestion": "使用 tdx_limit_up_pool 获取涨停池数据，或使用 tdx_top_gainers_losers 获取涨跌榜",
+		})), nil
+	}
+	defer resp.Body.Close()
+
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return mcp.NewToolResultText(toJSON(map[string]interface{}{
+			"status":  "unavailable",
+			"message": "龙虎榜数据源暂不可用",
+			"data":    nil,
+		})), nil
+	}
+
+	var raw map[string]interface{}
+	json.Unmarshal(body, &raw)
+
+	return mcp.NewToolResultText(toJSON(map[string]interface{}{
+		"status":  "partial",
+		"message": "龙虎榜详细数据暂不可用，返回市场概况数据",
+		"data":    raw,
+		"suggestion": "使用 tdx_limit_up_pool 获取涨停池数据",
+	})), nil
 }
 
 func HandleConvertibleBond(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -2040,9 +2218,9 @@ func HandleSectorBoardStocks(ctx context.Context, client Client, request mcp.Cal
 // NewMacroDataWebTool returns the macro data tool definition.
 func NewMacroDataWebTool() mcp.Tool {
 	return mcp.NewTool(ToolMacroDataWeb,
-		mcp.WithDescription("宏观经济数据查询（支持CPI/GDP/PMI/LPR/SHIBOR/M2）"),
+		mcp.WithDescription("宏观经济数据查询（支持CPI/GDP/PMI，东方财富数据中心公开接口）"),
 		mcp.WithString("indicator",
-			mcp.Description("指标名称: CPI/GDP/PMI/LPR/SHIBOR/M2 (默认CPI)"),
+			mcp.Description("指标名称: CPI/GDP/PMI (默认CPI)"),
 		),
 		mcp.WithNumber("count",
 			mcp.Description("返回数据条数 (默认12)"),
@@ -5623,18 +5801,329 @@ func HandleRAGQuery(ctx context.Context, client Client, request mcp.CallToolRequ
 	if v, ok := request.GetArguments()["top_k"].(float64); ok {
 		topK = int(v)
 	}
-	type ragClient interface {
-		RAGQuery(ctx context.Context, q string, k int) (*RAGResponse, error)
-	}
-	rc, ok := client.(ragClient)
-	if !ok {
-		return mcp.NewToolResultError("当前客户端不支持RAG问答"), nil
-	}
-	resp, err := rc.RAGQuery(ctx, query, topK)
+
+	// Use local RAG first; fall back to HTTP RAG API only if token is available
+	result, err := HandleRAGQueryLocal(ctx, client, query, topK)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("RAG查询失败: %v", err)), nil
+		return result, err
 	}
+	return result, nil
+}
+
+// ===== Local RAG Implementation =====
+
+// LocalRAGResult is one entity-result pair returned by local RAG.
+type LocalRAGResult struct {
+	Type      string `json:"type"`
+	Name      string `json:"name"`
+	Code      string `json:"code,omitempty"`
+	Score     float64 `json:"score"`
+	Data      interface{} `json:"data,omitempty"`
+}
+
+// ragReasoningStep is one step in the reasoning path for LLM guidance.
+type ragReasoningStep struct {
+	Step   int    `json:"step"`
+	Action string `json:"action"`
+	Detail string `json:"detail"`
+}
+
+// ragIntent maps query patterns to the tool they should route to.
+type ragIntent struct {
+	patterns   []string
+	dataSource string
+	tools      []string
+	score      float64
+	reasoning  []ragReasoningStep
+}
+
+var ragIntents = []ragIntent{
+	{patterns: []string{"板块", "行业", "概念", "板块排名", "涨得好", "跌得好", "热点", "强势", "弱势", "轮动", "今天哪个板块", "哪个板块涨"}, dataSource: "board", tools: []string{"tdx_sector_boards", "tdx_board_members"}, reasoning: boardReasoning()},
+	{patterns: []string{"基本面", "财务", "收入", "利润", "净", "资产", "负债", "EPS", "每股收益", "PE", "PB", "ROE", "毛利率", "净利润", "营业收入", "资产负债表", "利润表", "现金流量", "估值", "基本面如何", "财务怎么样"}, dataSource: "finance", tools: []string{"tdx_finance_info", "tdx_stock_stats"}, reasoning: financeReasoning()},
+	{patterns: []string{"指标", "MACD", "RSI", "KDJ", "均线", "布林", "BOLL", "成交量", "量价", "WR", "CCI", "DMI", "EMA", "DMA", "OBV", "MFI", "ADX", "VR", "技术面", "技术指标", "超买超卖", "支撑阻力"}, dataSource: "indicator", tools: []string{"tdx_technical_indicator"}, reasoning: indicatorReasoning()},
+	{patterns: []string{"缠论", "中枢", "笔", "分型", "买卖点"}, dataSource: "chanlun", tools: []string{"tdx_chanlun_detail"}, reasoning: chanlunReasoning()},
+	{patterns: []string{"回测", "策略", "盈利", "胜率", "组合"}, dataSource: "backtest", tools: []string{"tdx_backtest"}, reasoning: backtestReasoning()},
+	{patterns: []string{"宏观", "CPI", "GDP", "PMI", "M2", "利率", "通胀", "通缩", "LPR", "货币政策", "财政政策", "经济数据"}, dataSource: "macro", tools: []string{"tdx_macro_data", "tdx_market_overview"}, reasoning: macroReasoning()},
+	{patterns: []string{"资金", "北向", "南向", "融资融券", "龙虎榜", "主力", "游资", "净流入", "净流出"}, dataSource: "fund", tools: []string{"tdx_northbound_flow", "tdx_dragon_tiger", "tdx_margin_trade"}, reasoning: fundReasoning()},
+	{patterns: []string{"K线", "日线", "周线", "月线", "分钟", "价格走势", "趋势", "均线", "支撑", "压力", "回调", "突破"}, dataSource: "kline", tools: []string{"tdx_kline_data", "tdx_index_kline"}, reasoning: klineReasoning()},
+	{patterns: []string{"行情", "价格", "涨幅", "涨跌", "成交额", "成交量", "实时", "最新", "大盘", "指数", "点位", "今天行情", "市场"}, dataSource: "quote", tools: []string{"tdx_quotes", "tdx_quote_realtime"}, reasoning: quoteReasoning()},
+}
+
+// extractStockCode tries to extract a stock code from the query.
+func extractStockCode(query string) string {
+	// Match 6-digit codes
+	matches := re6DigitCode.FindAllString(query, -1)
+	if len(matches) > 0 {
+		return matches[0]
+	}
+	return ""
+}
+
+// extractMarketFromCode guesses market from code pattern.
+func extractMarketFromCode(code string) string {
+	if strings.HasPrefix(code, "6") {
+		return "1" // Shanghai
+	}
+	return "0" // Default Shenzhen
+}
+
+var re6DigitCode = regexp.MustCompile(`\b\d{6}\b`)
+
+// HandleRAGQueryLocal performs keyword-based local RAG: parse query, extract entities,
+// route to the right data tools, fetch data, build reasoning path, and return structured response.
+func HandleRAGQueryLocal(ctx context.Context, client Client, query string, topK int) (*mcp.CallToolResult, error) {
+	if topK <= 0 {
+		topK = 3
+	}
+
+	code := extractStockCode(query)
+	intent := findBestIntent(query)
+
+	// Execute the matched data tool(s) to fetch evidence
+	var results []LocalRAGResult
+	if intent.dataSource != "" {
+		for _, toolName := range intent.tools {
+			handler := GetNewHandler(toolName)
+			if handler == nil {
+				handler = GetHandler(toolName)
+			}
+			if handler == nil {
+				continue
+			}
+
+			args := buildRAGArgs(query, code, intent)
+			req := makeRAGReq(args)
+
+			result, err := handler(ctx, client, req)
+			if err != nil || result == nil || result.IsError {
+				errMsg := "数据获取失败"
+				if err != nil {
+					errMsg = err.Error()
+				} else if result != nil && len(result.Content) > 0 {
+					errMsg = string(result.Content[0].(mcp.TextContent).Text)
+				}
+				results = append(results, LocalRAGResult{
+					Type:  intent.dataSource,
+					Name:  query,
+					Code:  code,
+					Score: 0.0,
+					Data:  errMsg,
+				})
+				continue
+			}
+
+			var data interface{}
+			if len(result.Content) > 0 {
+				text := string(result.Content[0].(mcp.TextContent).Text)
+				if json.Unmarshal([]byte(text), &data) != nil {
+					data = text
+				}
+			}
+
+			results = append(results, LocalRAGResult{
+				Type:  intent.dataSource,
+				Name:  query,
+				Code:  code,
+				Score: 1.0,
+				Data:  data,
+			})
+		}
+	}
+
+	// Sort by score descending, limit to topK
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+	if len(results) > topK {
+		results = results[:topK]
+	}
+
+	// Build reasoning path
+	reasoningPath := intent.reasoning
+	if len(reasoningPath) == 0 {
+		reasoningPath = unrecognizedReasoning(query)
+	}
+
+	// Build structured response
+	resp := map[string]interface{}{
+		"query":          query,
+		"intent":         intent.dataSource,
+		"intent_score":   intent.score,
+		"fetched_data":   results,
+		"data_points":    len(results),
+		"reasoning_path": reasoningPath,
+	}
+
+	if intent.dataSource == "" {
+		resp["suggested_actions"] = []string{
+			"请提供股票代码（如000001）进行个股分析",
+			"添加明确关键词：基本面/指标/资金/K线/板块/宏观",
+			"参考示例：'000001的基本面如何？' 或 '今天哪个板块涨得好？'",
+		}
+	}
+
 	return mcp.NewToolResultText(toJSON(resp)), nil
+}
+
+// findBestIntent matches query against known patterns and returns the best match.
+func findBestIntent(query string) ragIntent {
+	best := ragIntent{score: 0}
+	bestMatch := 0
+	for _, intent := range ragIntents {
+		matchCount := 0
+		for _, pat := range intent.patterns {
+			if strings.Contains(query, pat) {
+				matchCount++
+			}
+		}
+		if matchCount > 0 && matchCount > bestMatch {
+			best.dataSource = intent.dataSource
+			best.tools = intent.tools
+			best.reasoning = intent.reasoning
+			best.score = float64(matchCount)
+			bestMatch = matchCount
+		}
+	}
+	return best
+}
+
+// buildRAGArgs constructs the argument map for the data tool based on intent.
+func buildRAGArgs(query string, code string, intent ragIntent) map[string]any {
+	args := map[string]any{}
+	if code != "" {
+		args["code"] = code
+		args["setcode"] = extractMarketFromCode(code)
+	}
+	switch intent.dataSource {
+	case "kline", "indicator", "chanlun":
+		args["period"] = "day"
+		args["count"] = 100
+	case "quote":
+		args["hasProInfo"] = "0"
+	case "finance":
+		args["type"] = "annual"
+		args["code"] = args["code"]
+	case "backtest":
+		args["period"] = "day"
+		args["count"] = 100
+	}
+	return args
+}
+
+func makeRAGReq(args map[string]any) mcp.CallToolRequest {
+	return mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Arguments: args,
+		},
+	}
+}
+
+// boardReasoning returns reasoning path for board/sector questions.
+func boardReasoning() []ragReasoningStep {
+	return []ragReasoningStep{
+		{Step: 1, Action: "读取板块数据", Detail: "获取行业板块和概念板块的涨跌幅、成交额数据"},
+		{Step: 2, Action: "排序筛选", Detail: "按涨跌幅从高到低排序，关注涨幅前5的板块及其成交额"},
+		{Step: 3, Action: "结合广度判断", Detail: "对比板块涨幅与成交额，成交额大的领涨板块信号更强"},
+		{Step: 4, Action: "识别主线", Detail: "涨幅集中+成交额大的板块即为当日主线方向"},
+		{Step: 5, Action: "风险提示", Detail: "注意板块持续性，单日大涨可能是轮动，需结合连续多日数据判断"},
+	}
+}
+
+// financeReasoning returns reasoning path for financial/fundamental questions.
+func financeReasoning() []ragReasoningStep {
+	return []ragReasoningStep{
+		{Step: 1, Action: "读取财务数据", Detail: "获取营业收入、净利润、毛利率、ROE、PE、PB 等核心指标"},
+		{Step: 2, Action: "解读盈利能力", Detail: "毛利率反映产品竞争力，净利率反映成本控制，ROE 反映股东回报水平"},
+		{Step: 3, Action: "判断成长性", Detail: "对比近三年营收和净利润增速，判断公司处于成长期/成熟期/衰退期"},
+		{Step: 4, Action: "评估估值", Detail: "PE 低于行业平均为低估，高于行业平均需验证高估值合理性"},
+		{Step: 5, Action: "风险提示", Detail: "关注资产负债率是否过高、现金流是否为负、是否有重大减持"},
+	}
+}
+
+// indicatorReasoning returns reasoning path for technical indicator questions.
+func indicatorReasoning() []ragReasoningStep {
+	return []ragReasoningStep{
+		{Step: 1, Action: "读取指标数据", Detail: "获取 MACD、RSI、KDJ、BOLL 等指标的最新值"},
+		{Step: 2, Action: "判断趋势", Detail: "MACD 金叉且 DIF 上穿零轴为买入信号，死叉且 DIF 下穿零轴为卖出信号"},
+		{Step: 3, Action: "判断超买超卖", Detail: "RSI 高于70为超买区，低于30为超卖区，KDJ 的 K/D 同理"},
+		{Step: 4, Action: "支撑压力位", Detail: "BOLL 上轨为压力，下轨为支撑，中轨为多空分界"},
+		{Step: 5, Action: "综合判断", Detail: "至少两个指标同向才能确认信号，单指标信号需等待确认"},
+	}
+}
+
+// chanlunReasoning returns reasoning path for Chanlun questions.
+func chanlunReasoning() []ragReasoningStep {
+	return []ragReasoningStep{
+		{Step: 1, Action: "读取缠论数据", Detail: "获取笔、分型、中枢的结构数据"},
+		{Step: 2, Action: "识别当前中枢", Detail: "确定当前价格所处中枢位置：中枢内/上方/下方"},
+		{Step: 3, Action: "判断走势类型", Detail: "离开中枢后的背驰判断：是否出现第二类卖点/买点"},
+		{Step: 4, Action: "买卖点定位", Detail: "一类买点在中枢下方背驰处，二类买点在中枢第一次回调不破前低处"},
+		{Step: 5, Action: "风险提示", Detail: "缠论信号需要级别确认，小级别信号在大级别面前可能被吞没"},
+	}
+}
+
+// backtestReasoning returns reasoning path for strategy/backtest questions.
+func backtestReasoning() []ragReasoningStep {
+	return []ragReasoningStep{
+		{Step: 1, Action: "读取回测数据", Detail: "获取策略回测结果：收益率、最大回撤、夏普比率、胜率"},
+		{Step: 2, Action: "评估收益风险比", Detail: "夏普比率大于1.5为优秀，大于2.0为顶级；最大回撤小于20%可接受"},
+		{Step: 3, Action: "分析胜率有效性", Detail: "胜率低于50%但盈亏比大于3仍可盈利；高胜率低盈亏比容易被少数亏损打爆"},
+		{Step: 4, Action: "判断适用场景", Detail: "回测数据仅反映历史，需确认策略逻辑在当前市场环境下是否仍然有效"},
+		{Step: 5, Action: "风险提示", Detail: "警惕过拟合：回测完美但实盘无效；需样本外验证"},
+	}
+}
+
+// macroReasoning returns reasoning path for macro questions.
+func macroReasoning() []ragReasoningStep {
+	return []ragReasoningStep{
+		{Step: 1, Action: "读取宏观数据", Detail: "获取 CPI、GDP、PMI 等宏观指标的最新值（东方财富datacenter公开接口，M2/LPR/SHIBOR暂无公开数据源）"},
+		{Step: 2, Action: "数据解读", Detail: "CPI 高于3%表示通胀压力，PMI 低于50表示经济收缩，GDP环比增速反映经济动能"},
+		{Step: 3, Action: "综合研判", Detail: "将各指标信号综合：通胀+CPI上行=货币收紧预期；通缩+CPI下行=宽松预期"},
+		{Step: 4, Action: "市场映射", Detail: "宽松预期有利于成长股和券商；紧缩利好现金和防御板块"},
+		{Step: 5, Action: "风险提示", Detail: "宏观数据有滞后性，政策传导需要时间，短期市场可能反向"},
+	}
+}
+
+// fundReasoning returns reasoning path for fund flow questions.
+func fundReasoning() []ragReasoningStep {
+	return []ragReasoningStep{
+		{Step: 1, Action: "读取资金流向", Detail: "获取北向资金、主力资金、融资融券的净流入/流出数据"},
+		{Step: 2, Action: "判断方向", Detail: "北向连续净流入3天以上为看多信号；大幅净流出为看空信号"},
+		{Step: 3, Action: "对比总量", Detail: "净流入金额占当日成交额比例大于1%才有意义，小额净流入可能是噪音"},
+		{Step: 4, Action: "板块分布", Detail: "资金集中流入的板块是主力资金方向，比总量更值得参考"},
+		{Step: 5, Action: "风险提示", Detail: "北向资金有滞后，且可能受汇率影响；主力资金数据有统计口径差异"},
+	}
+}
+
+// klineReasoning returns reasoning path for K-line/trend questions.
+func klineReasoning() []ragReasoningStep {
+	return []ragReasoningStep{
+		{Step: 1, Action: "读取K线数据", Detail: "获取日/周/月 K 线数据：开高低收成交量"},
+		{Step: 2, Action: "识别形态", Detail: "连续阳线后放量滞涨=顶部信号；连续阴线后缩量企稳=底部信号"},
+		{Step: 3, Action: "量价配合判断", Detail: "放量上涨为健康上涨，缩量上涨需警惕；放量下跌为恐慌抛售"},
+		{Step: 4, Action: "趋势确认", Detail: "周线趋势优先于日线趋势；日线趋势优先于分钟线趋势"},
+		{Step: 5, Action: "风险提示", Detail: "K线形态有滞后性，突破假信号常见；需等待收盘价确认"},
+	}
+}
+
+// quoteReasoning returns reasoning path for market quote questions.
+func quoteReasoning() []ragReasoningStep {
+	return []ragReasoningStep{
+		{Step: 1, Action: "读取行情数据", Detail: "获取大盘指数、个股价格、涨跌幅、成交量、成交额"},
+		{Step: 2, Action: "判断市场强弱", Detail: "涨跌家数比大于3:1为强势；小于1:3为弱势；1:1为震荡"},
+		{Step: 3, Action: "板块对比", Detail: "领涨板块的涨幅和成交额反映市场主线方向"},
+		{Step: 4, Action: "个股定位", Detail: "个股涨幅对比板块涨幅：强于板块=主力青睐，弱于板块=资金出逃"},
+		{Step: 5, Action: "风险提示", Detail: "盘中数据有波动，收盘数据才可靠；尾盘异动需特别关注"},
+	}
+}
+
+// unrecognizedReasoning returns a fallback reasoning path when no intent matches.
+func unrecognizedReasoning(query string) []ragReasoningStep {
+	return []ragReasoningStep{
+		{Step: 1, Action: "分析查询意图", Detail: fmt.Sprintf("查询为「%s」，当前关键词匹配未能精确路由。建议将查询拆分为具体维度：行业/个股/时间/指标。", query)},
+		{Step: 2, Action: "建议补充信息", Detail: "如需板块分析，可补充「板块」关键词；如需个股分析，请提供股票代码（如000001）；如需宏观分析，可补充「宏观」或具体指标名（如CPI、PMI）"},
+		{Step: 3, Action: "尝试通用数据", Detail: "已返回市场概况数据，LLM 可基于市场概况数据对查询进行初步推断"},
+	}
 }
 
 func HandleQuoteList(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -5900,15 +6389,26 @@ func HandleStockSplitInfo(ctx context.Context, client Client, request mcp.CallTo
 
 func HandleIPOCalendar(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	date, _ := request.GetArguments()["date"].(string)
+	if date == "" {
+		date = time.Now().Format("20060102")
+	}
 	limit := 20
 	if v, ok := request.GetArguments()["limit"].(float64); ok {
 		limit = int(v)
 	}
+
+	iCal, ok := client.(ipoCalendarClient)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持IPO日历查询"), nil
+	}
+	data, err := iCal.IPOCalendar(date, limit)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("获取IPO日历失败: %v", err)), nil
+	}
 	return mcp.NewToolResultText(toJSON(map[string]interface{}{
-		"date":    date,
-		"limit":   limit,
-		"message": "IPO日历数据通过东方财富爬虫获取",
-		"data":    []map[string]interface{}{},
+		"date": date,
+		"count": len(data),
+		"data": data,
 	})), nil
 }
 
@@ -6411,6 +6911,428 @@ func NewFormulaListTool() mcp.Tool {
 	return mcp.NewTool(ToolFormulaList,
 		mcp.WithDescription("列出通达信公式引擎支持的所有内置函数（含类别、参数说明）"),
 	)
+}
+
+// =============================================================================
+// TDX Protocol Data Tools Handlers
+// =============================================================================
+
+// HandleCallAuction retrieves call auction data for a stock.
+func HandleCallAuction(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	code, err := request.RequireString("code")
+	if err != nil {
+		return mcp.NewToolResultError("code 参数必填"), nil
+	}
+	setcode, err := request.RequireString("setcode")
+	if err != nil {
+		return mcp.NewToolResultError("setcode 参数必填 (0=深圳, 1=上海)"), nil
+	}
+	market, _ := strconv.Atoi(setcode)
+	if market != 0 && market != 1 {
+		return mcp.NewToolResultError("setcode 必须为 0(深圳) 或 1(上海)"), nil
+	}
+
+	type auctionClient interface {
+		GetCallAuction(code string, market int) ([]proto.AuctionData, error)
+	}
+	ac, ok := client.(auctionClient)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持集合竞价查询"), nil
+	}
+	data, err := ac.GetCallAuction(code, market)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("获取集合竞价数据失败: %v", err)), nil
+	}
+
+	if len(data) == 0 {
+		return mcp.NewToolResultText(toJSON(map[string]interface{}{
+			"code":    code,
+			"market":  market,
+			"count":   0,
+			"message": "当前无集合竞价数据",
+			"data":    []map[string]interface{}{},
+		})), nil
+	}
+
+	items := make([]map[string]interface{}, 0, len(data))
+	for _, item := range data {
+		items = append(items, map[string]interface{}{
+			"time":       item.Time,
+			"price":      item.Price,
+			"matched":    item.Matched,
+			"unmatched":  item.Unmatched,
+			"flag":       item.Flag,
+		})
+	}
+	return mcp.NewToolResultText(toJSON(map[string]interface{}{
+		"code":   code,
+		"market": market,
+		"count":  len(items),
+		"data":   items,
+	})), nil
+}
+
+// HandleHistoryMinute retrieves historical minute data for a stock on a specific date.
+func HandleHistoryMinute(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	code, err := request.RequireString("code")
+	if err != nil {
+		return mcp.NewToolResultError("code 参数必填"), nil
+	}
+	setcode, err := request.RequireString("setcode")
+	if err != nil {
+		return mcp.NewToolResultError("setcode 参数必填 (0=深圳, 1=上海)"), nil
+	}
+	dateStr, err := request.RequireString("date")
+	if err != nil {
+		return mcp.NewToolResultError("date 参数必填，格式 YYYYMMDD"), nil
+	}
+	market, _ := strconv.Atoi(setcode)
+	if market != 0 && market != 1 {
+		return mcp.NewToolResultError("setcode 必须为 0(深圳) 或 1(上海)"), nil
+	}
+
+	type historyMinuteClient interface {
+		GetHistoryMinute(code string, market int, date string) ([]proto.HistoryMinuteTimeData, error)
+	}
+	hc, ok := client.(historyMinuteClient)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持历史分时查询"), nil
+	}
+	data, err := hc.GetHistoryMinute(code, market, dateStr)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("获取历史分时数据失败: %v", err)), nil
+	}
+
+	items := make([]map[string]interface{}, 0, len(data))
+	for i, item := range data {
+		totalMin := 30 + i
+		hour := 9 + totalMin/60
+		min := totalMin % 60
+		timestamp := fmt.Sprintf("%02d:%02d", hour, min)
+		items = append(items, map[string]interface{}{
+			"time":   timestamp,
+			"price":  item.Price,
+			"avg":    item.Avg,
+			"volume": item.Vol,
+		})
+	}
+	return mcp.NewToolResultText(toJSON(map[string]interface{}{
+		"code":   code,
+		"date":   dateStr,
+		"market": market,
+		"count":  len(items),
+		"data":   items,
+	})), nil
+}
+
+// HandleHistoryTrade retrieves historical tick-by-tick transaction data.
+func HandleHistoryTrade(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	code, err := request.RequireString("code")
+	if err != nil {
+		return mcp.NewToolResultError("code 参数必填"), nil
+	}
+	setcode, err := request.RequireString("setcode")
+	if err != nil {
+		return mcp.NewToolResultError("setcode 参数必填 (0=深圳, 1=上海)"), nil
+	}
+	dateStr, err := request.RequireString("date")
+	if err != nil {
+		return mcp.NewToolResultError("date 参数必填，格式 YYYYMMDD"), nil
+	}
+	count := 100
+	if v, ok := request.GetArguments()["count"].(float64); ok && v > 0 {
+		count = int(v)
+		if count > 500 {
+			count = 500
+		}
+	}
+	market, _ := strconv.Atoi(setcode)
+	if market != 0 && market != 1 {
+		return mcp.NewToolResultError("setcode 必须为 0(深圳) 或 1(上海)"), nil
+	}
+
+	type historyTradeClient interface {
+		GetHistoryTrade(code string, market int, date string, count int) ([]proto.HistoryTransactionData, error)
+	}
+	htc, ok := client.(historyTradeClient)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持历史分笔查询"), nil
+	}
+	data, err := htc.GetHistoryTrade(code, market, dateStr, count)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("获取历史分笔数据失败: %v", err)), nil
+	}
+
+	items := make([]map[string]interface{}, 0, len(data))
+	for _, item := range data {
+		items = append(items, map[string]interface{}{
+			"time":      item.Time.Format("15:04:05"),
+			"price":     item.Price,
+			"volume":    item.Vol,
+			"buy_sell":  item.BuyOrSell,
+			"action":    item.Action,
+			"num":       item.Num,
+		})
+	}
+	return mcp.NewToolResultText(toJSON(map[string]interface{}{
+		"code":   code,
+		"date":   dateStr,
+		"market": market,
+		"count":  len(items),
+		"data":   items,
+	})), nil
+}
+
+// HandleStockStats retrieves stock statistics indicators.
+func HandleStockStats(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	code, err := request.RequireString("code")
+	if err != nil {
+		return mcp.NewToolResultError("code 参数必填"), nil
+	}
+	setcode, err := request.RequireString("setcode")
+	if err != nil {
+		return mcp.NewToolResultError("setcode 参数必填 (0=深圳, 1=上海)"), nil
+	}
+	market, _ := strconv.Atoi(setcode)
+	if market != 0 && market != 1 {
+		return mcp.NewToolResultError("setcode 必须为 0(深圳) 或 1(上海)"), nil
+	}
+	metrics := request.GetString("metrics", "")
+
+	type stockStatsClient interface {
+		GetRealtimeQuote(code string, market int) (*proto.SecurityQuote, error)
+		GetSymbolInfo(code string, market int) (*proto.MACSymbolInfoReply, error)
+		GetSymbolBelongBoard(code string, market uint8) ([]proto.MACBelongBoardItem, error)
+	}
+	ssc, ok := client.(stockStatsClient)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持个股统计查询"), nil
+	}
+
+	stats := map[string]interface{}{
+		"code":   code,
+		"market": market,
+	}
+
+	// Get real-time quote
+	quote, err := ssc.GetRealtimeQuote(code, market)
+	if err != nil {
+		stats["error_quote"] = err.Error()
+	} else {
+		changePct := 0.0
+		if quote.PreClose > 0 {
+			changePct = (quote.Close - quote.PreClose) / quote.PreClose * 100
+		}
+		stats["current_price"] = quote.Close
+		stats["change_pct"] = changePct
+		stats["volume"] = quote.Vol
+		stats["amount"] = quote.Amount
+		stats["high"] = quote.High
+		stats["low"] = quote.Low
+		stats["open"] = quote.Open
+		stats["pre_close"] = quote.PreClose
+		stats["turnover_rate"] = quote.Turnover
+	}
+
+	// Get symbol info (MAC)
+	symbolInfo, err := ssc.GetSymbolInfo(code, market)
+	if err != nil {
+		stats["error_symbol_info"] = err.Error()
+	} else {
+		stats["name"] = symbolInfo.Name
+		stats["momentum"] = symbolInfo.Momentum
+		stats["turnover"] = symbolInfo.Turnover
+		stats["inside_volume"] = symbolInfo.InsideVolume
+		stats["outside_volume"] = symbolInfo.OutsideVolume
+		stats["avg_price"] = symbolInfo.Avg
+	}
+
+	// Get finance info for EPS, market cap, etc.
+	type financeClient interface {
+		GetFinanceInfo(code string, market int) (*proto.GetFinanceInfoReply, error)
+	}
+	if fc, ok := client.(financeClient); ok {
+		finance, ferr := fc.GetFinanceInfo(code, market)
+		if ferr == nil {
+			marketCap := 0.0
+			if quote != nil && quote.PreClose > 0 {
+				marketCap = quote.Close * float64(finance.TotalShares) / 100000000.0
+			}
+			stats["eps"] = float64(finance.EPS)
+			stats["total_shares"] = float64(finance.TotalShares)
+			stats["float_shares"] = float64(finance.FloatShares)
+			stats["total_market_cap"] = marketCap
+			stats["total_assets"] = float64(finance.TotalAssets)
+			stats["total_equity"] = float64(finance.TotalEquity)
+			stats["net_profit"] = float64(finance.NetProfit)
+			stats["shareholder_count"] = int(finance.ShareholderCount)
+			stats["ipo_date"] = fmt.Sprintf("%04d%02d%02d", finance.IPODate/10000, (finance.IPODate/100)%100, finance.IPODate%100)
+		} else {
+			stats["error_finance"] = ferr.Error()
+		}
+	}
+
+	// Get board membership
+	belongBoard, err := ssc.GetSymbolBelongBoard(code, uint8(market))
+	if err != nil {
+		stats["error_belong_board"] = err.Error()
+	} else {
+		boards := make([]map[string]interface{}, 0)
+		for _, b := range belongBoard {
+			boards = append(boards, map[string]interface{}{
+				"code": b.BoardCode,
+				"name": b.BoardName,
+				"type": b.BoardType,
+			})
+		}
+		stats["belong_boards"] = boards
+	}
+
+	// Apply metrics filter
+	if metrics != "" {
+		metricList := strings.Split(metrics, ",")
+		filtered := map[string]interface{}{
+			"code":   stats["code"],
+			"market": stats["market"],
+		}
+		for _, m := range metricList {
+			m = strings.TrimSpace(m)
+			switch m {
+			case "price":
+				filtered["current_price"] = stats["current_price"]
+				filtered["change_pct"] = stats["change_pct"]
+			case "turnover":
+				filtered["turnover_rate"] = stats["turnover_rate"]
+			case "volume":
+				filtered["volume"] = stats["volume"]
+				filtered["amount"] = stats["amount"]
+			case "finance":
+				filtered["eps"] = stats["eps"]
+				filtered["total_shares"] = stats["total_shares"]
+				filtered["total_market_cap"] = stats["total_market_cap"]
+			case "belong_board":
+				filtered["belong_boards"] = stats["belong_boards"]
+			}
+		}
+		return mcp.NewToolResultText(toJSON(filtered)), nil
+	}
+
+	return mcp.NewToolResultText(toJSON(stats)), nil
+}
+
+// HandleFinanceInfo retrieves financial data for a stock.
+func HandleFinanceInfo(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	code, err := request.RequireString("code")
+	if err != nil {
+		return mcp.NewToolResultError("code 参数必填"), nil
+	}
+	setcode, err := request.RequireString("setcode")
+	if err != nil {
+		return mcp.NewToolResultError("setcode 参数必填 (0=深圳, 1=上海)"), nil
+	}
+	market, _ := strconv.Atoi(setcode)
+	if market != 0 && market != 1 {
+		return mcp.NewToolResultError("setcode 必须为 0(深圳) 或 1(上海)"), nil
+	}
+
+	type financeClient interface {
+		GetFinanceInfo(code string, market int) (*proto.GetFinanceInfoReply, error)
+	}
+	fc, ok := client.(financeClient)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持财务数据查询"), nil
+	}
+	reply, err := fc.GetFinanceInfo(code, market)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("获取财务数据失败: %v", err)), nil
+	}
+
+	var ipoDateStr string
+	if reply.IPODate > 0 && reply.IPODate < 100000000 {
+		ipoDateStr = fmt.Sprintf("%04d%02d%02d", reply.IPODate/10000, (reply.IPODate/100)%100, reply.IPODate%100)
+	}
+	var updatedDateStr string
+	if reply.UpdatedDate > 0 && reply.UpdatedDate < 100000000 {
+		updatedDateStr = fmt.Sprintf("%04d%02d%02d", reply.UpdatedDate/10000, (reply.UpdatedDate/100)%100, reply.UpdatedDate%100)
+	}
+
+	return mcp.NewToolResultText(toJSON(map[string]interface{}{
+		"code":               code,
+		"market":             market,
+		"updated_date":       updatedDateStr,
+		"ipo_date":           ipoDateStr,
+		"total_shares":       reply.TotalShares,
+		"float_shares":       reply.FloatShares,
+		"state_shares":       reply.StateShares,
+		"eps":                reply.EPS,
+		"net_assets_per_share": reply.NetAssetsPerShare,
+		"total_assets":       reply.TotalAssets,
+		"net_profit":         reply.NetProfit,
+		"total_profit":       reply.TotalProfit,
+		"operating_revenue":  reply.OperatingRevenue,
+		"total_equity":       reply.TotalEquity,
+		"shareholder_count":  reply.ShareholderCount,
+		"undistributed_profit": reply.UndistributedProfit,
+	})), nil
+}
+
+// HandleIndexKline retrieves index K-line data.
+func HandleIndexKline(ctx context.Context, client Client, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	code, err := request.RequireString("code")
+	if err != nil {
+		return mcp.NewToolResultError("code 参数必填"), nil
+	}
+	setcode := request.GetString("setcode", "1")
+	market, _ := strconv.Atoi(setcode)
+	if market != 0 && market != 1 {
+		return mcp.NewToolResultError("setcode 必须为 0(深圳) 或 1(上海)"), nil
+	}
+	period := request.GetString("period", "day")
+	count := 100
+	if v, ok := request.GetArguments()["count"].(float64); ok && v > 0 {
+		count = int(v)
+		if count > 1000 {
+			count = 1000
+		}
+	}
+
+	periodCode := PeriodToCode(period)
+	if periodCode == 0 {
+		return mcp.NewToolResultError("period 参数无效: 支持 day/week/month/1min/5min/15min/30min/60min"), nil
+	}
+
+	type indexKlineClient interface {
+		GetIndexKLine(code string, market int, period int, count int) ([]proto.IndexBar, error)
+	}
+	ikc, ok := client.(indexKlineClient)
+	if !ok {
+		return mcp.NewToolResultError("当前客户端不支持指数K线查询"), nil
+	}
+	data, err := ikc.GetIndexKLine(code, market, periodCode, count)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("获取指数K线数据失败: %v", err)), nil
+	}
+
+	bars := make([]map[string]interface{}, 0, len(data))
+	for _, bar := range data {
+		bars = append(bars, map[string]interface{}{
+			"date":   bar.DateTime.Format("2006-01-02"),
+			"time":   bar.DateTime.Format("15:04"),
+			"open":   bar.Open,
+			"high":   bar.High,
+			"low":    bar.Low,
+			"close":  bar.Close,
+			"volume": bar.Vol,
+			"amount": bar.Amount,
+		})
+	}
+	return mcp.NewToolResultText(toJSON(map[string]interface{}{
+		"code":   code,
+		"market": market,
+		"period": period,
+		"count":  len(bars),
+		"data":   bars,
+	})), nil
 }
 
 type klineQueryClient interface {
