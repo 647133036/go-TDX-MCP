@@ -2187,6 +2187,8 @@ func HandleChanlun(ctx context.Context, client Client, request mcp.CallToolReque
 	}
 
 	result := chanlun.Analyze(klines)
+	result.Symbol = code
+	result.Period = period
 
 	type outputBi struct {
 		Index     int     `json:"index"`
@@ -2993,6 +2995,7 @@ func parseTCPBars(raw []byte) ([]indicator.Bar, error) {
 	}
 	bars := make([]indicator.Bar, len(tcpBars))
 	for i, bm := range tcpBars {
+		bars[i].Date = tcpBarDate(bm)
 		bars[i].Open = toFloat64(bm["Open"])
 		bars[i].High = toFloat64(bm["High"])
 		bars[i].Low = toFloat64(bm["Low"])
@@ -3001,6 +3004,30 @@ func parseTCPBars(raw []byte) ([]indicator.Bar, error) {
 		bars[i].Amount = toFloat64(bm["Amount"])
 	}
 	return bars, nil
+}
+
+// tcpBarDate 从 TCP K 线 map 解析日期，返回 YYYYMMDD 字符串。
+func tcpBarDate(bm map[string]interface{}) string {
+	if yr, ok := bm["Year"]; ok {
+		ymd := toFloat64(yr)
+		if ymd > 0 {
+			yi := int(ymd)
+			y := yi / 10000
+			m := (yi / 100) % 100
+			d := yi % 100
+			if m > 0 {
+				return fmt.Sprintf("%04d%02d%02d", y, m, d)
+			}
+		}
+	}
+	if y, ok := bm["Year"]; ok {
+		if mo, ok := bm["Month"]; ok {
+			if dy, ok := bm["Day"]; ok {
+				return fmt.Sprintf("%04d%02d%02d", int(toFloat64(y)), int(toFloat64(mo)), int(toFloat64(dy)))
+			}
+		}
+	}
+	return ""
 }
 
 // parseKlineBars extracts indicator.Bar slice from TQLEX K-line response data.
@@ -3014,8 +3041,10 @@ func parseKlineBars(data interface{}) ([]indicator.Bar, error) {
 	if err == nil && len(bars) > 0 {
 		return bars, nil
 	}
-	// HTTP object format: []{open, close, high, low, vol, amount}
+	// HTTP object format: []{date, time, open, close, high, low, vol, amount}
 	type klineObj struct {
+		Date   string  `json:"date"`
+		Time   string  `json:"time"`
 		Open   float64 `json:"open"`
 		Close  float64 `json:"close"`
 		High   float64 `json:"high"`
@@ -3027,7 +3056,11 @@ func parseKlineBars(data interface{}) ([]indicator.Bar, error) {
 	if err := json.Unmarshal(raw, &objs); err == nil && len(objs) > 0 {
 		bars := make([]indicator.Bar, len(objs))
 		for i, o := range objs {
-			bars[i] = indicator.Bar{Open: o.Open, Close: o.Close, High: o.High, Low: o.Low, Vol: o.Vol, Amount: o.Amount}
+			dt := o.Date
+			if dt == "" {
+				dt = o.Time
+			}
+			bars[i] = indicator.Bar{Date: dt, Open: o.Open, Close: o.Close, High: o.High, Low: o.Low, Vol: o.Vol, Amount: o.Amount}
 		}
 		return bars, nil
 	}
@@ -3063,7 +3096,14 @@ func parseKlineBars(data interface{}) ([]indicator.Bar, error) {
 				continue
 			}
 			// Item order: Data(0), Second(1), Open(2), High(3), Low(4), Close(5), Amount(6), VolInStock(7), Volume(8), ...
+			var dateStr string
+			if v, ok := fields[0].(string); ok {
+				dateStr = v
+			} else {
+				dateStr = fmt.Sprintf("%.0f", toFloat64(fields[0]))
+			}
 			bars = append(bars, indicator.Bar{
+				Date: dateStr,
 				Open: toFloat64(fields[2]), High: toFloat64(fields[3]),
 				Low: toFloat64(fields[4]), Close: toFloat64(fields[5]),
 				Amount: toFloat64(fields[6]), Vol: toFloat64(fields[8]),

@@ -102,15 +102,15 @@ func PeriodToCode(period string) int {
 		return 5
 	case "month", "月线":
 		return 6
-	case "60min", "60分钟":
+	case "60min", "60分钟", "60m", "1h":
 		return 3
-	case "1min", "1分钟":
+	case "1min", "1分钟", "1m":
 		return 9
-	case "5min", "5分钟":
+	case "5min", "5分钟", "5m":
 		return 10
-	case "15min", "15分钟":
+	case "15min", "15分钟", "15m":
 		return 11
-	case "30min", "30分钟":
+	case "30min", "30分钟", "30m":
 		return 12
 	default:
 		return 4

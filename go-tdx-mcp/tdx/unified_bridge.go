@@ -659,21 +659,19 @@ func parseBarsFromResponse(resp *TQLEXResponse) ([]indicator.Bar, error) {
 		return nil, err
 	}
 
-	// TCP format: [{Open, High, Low, Close, Vol, Amount}, ...]
-	var tcpBars []struct {
-		Open   float64 `json:"Open"`
-		High   float64 `json:"High"`
-		Low    float64 `json:"Low"`
-		Close  float64 `json:"Close"`
-		Vol    float64 `json:"Vol"`
-		Amount float64 `json:"Amount"`
-	}
+	// TCP format: [{Year, Month, Day, Open, High, Low, Close, Volume, Amount}, ...]
+	var tcpBars []map[string]interface{}
 	if err := json.Unmarshal(data, &tcpBars); err == nil && len(tcpBars) > 0 {
 		bars := make([]indicator.Bar, len(tcpBars))
-		for i, r := range tcpBars {
+		for i, bm := range tcpBars {
 			bars[i] = indicator.Bar{
-				Open: r.Open, High: r.High, Low: r.Low,
-				Close: r.Close, Vol: r.Vol, Amount: r.Amount,
+				Date:   tcpBarDate(bm),
+				Open:   toFloat64(bm["Open"]),
+				High:   toFloat64(bm["High"]),
+				Low:    toFloat64(bm["Low"]),
+				Close:  toFloat64(bm["Close"]),
+				Vol:    toFloat64(bm["Volume"]),
+				Amount: toFloat64(bm["Amount"]),
 			}
 		}
 		return bars, nil
@@ -697,7 +695,14 @@ func parseBarsFromResponse(resp *TQLEXResponse) ([]indicator.Bar, error) {
 				continue
 			}
 			// Item order: Data(0), Second(1), Open(2), High(3), Low(4), Close(5), Amount(6), VolInStock(7), Volume(8), ...
+			var dateStr string
+			if v, ok := fields[0].(string); ok {
+				dateStr = v
+			} else {
+				dateStr = fmt.Sprintf("%.0f", toFloat64(fields[0]))
+			}
 			bars = append(bars, indicator.Bar{
+				Date:   dateStr,
 				Open:   toFloat64(fields[2]),
 				High:   toFloat64(fields[3]),
 				Low:    toFloat64(fields[4]),

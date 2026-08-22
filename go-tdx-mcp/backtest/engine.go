@@ -29,18 +29,32 @@ type Trade struct {
 }
 
 type Performance struct {
-	TotalReturn      float64 `json:"total_return"`
+	// 核心字段（对齐 easy_tdx 语义：比例口径，0~1）
+	TotalReturn   float64 `json:"total_return"`   // 总收益率 (final/initial - 1)
+	AnnualReturn  float64 `json:"annual_return"`  // 年化收益率
+	MaxDrawdown   float64 `json:"max_drawdown"`   // 最大回撤 (0~1 正值)
+	MaxDDDuration int     `json:"max_dd_duration"` // 最大回撤持续 bar 数
+	Sharpe        float64 `json:"sharpe"`         // 夏普比率（基于日收益率）
+	Sortino       float64 `json:"sortino"`        // 索提诺比率
+	Calmar        float64 `json:"calmar"`          // 卡玛比率
+	TotalTrades   int     `json:"total_trades"`    // 总交易次数（卖出次数）
+	WinTrades     int     `json:"win_trades"`     // 盈利交易次数
+	LoseTrades    int     `json:"lose_trades"`     // 亏损交易次数
+	WinRate       float64 `json:"win_rate"`       // 胜率 (0~1)
+	ProfitFactor  float64 `json:"profit_factor"`  // 盈亏比
+	AvgWin        float64 `json:"avg_win"`        // 平均盈利（单笔收益率口径）
+	AvgLoss       float64 `json:"avg_loss"`       // 平均亏损（单笔收益率口径）
+	MaxWin        float64 `json:"max_win"`        // 最大盈利（单笔收益率）
+	MaxLoss       float64 `json:"max_loss"`       // 最大亏损（单笔收益率）
+	Volatility    float64 `json:"volatility"`     // 年化波动率 (0~1)
+	StartCash     float64 `json:"start_cash"`     // 初始资金
+	EndValue      float64 `json:"end_value"`      // 期末净值
+	// 兼容别名（百分比/旧名，供展示与历史调用方使用）
 	TotalReturnPct   float64 `json:"total_return_pct"`
-	CAGR             float64 `json:"cagr"`
-	MaxDrawdown      float64 `json:"max_drawdown"`
 	MaxDrawdownPct   float64 `json:"max_drawdown_pct"`
 	SharpeRatio      float64 `json:"sharpe_ratio"`
 	AnnualVolatility float64 `json:"annual_volatility"`
-	WinRate          float64 `json:"win_rate"`
-	ProfitFactor     float64 `json:"profit_factor"`
-	AvgWin           float64 `json:"avg_win"`
-	AvgLoss          float64 `json:"avg_loss"`
-	TotalTrades      int     `json:"total_trades"`
+	CAGR             float64 `json:"cagr"`
 	WinningTrades    int     `json:"winning_trades"`
 	LosingTrades     int     `json:"losing_trades"`
 }
@@ -76,13 +90,16 @@ func (e *Engine) SetSlippage(v float64)   { e.slippage = v }
 
 func (e *Engine) Run(strategy Strategy, bars []indicator.Bar) *Result {
 	if len(bars) < 2 {
-		return &Result{Strategy: strategy.Name(), InitialCash: e.cash, FinalEquity: e.cash}
+		eq := []float64{e.cash, e.cash}
+		return &Result{Strategy: strategy.Name(), InitialCash: e.cash, FinalEquity: e.cash, Performance: calcPerformance(eq, nil)}
 	}
 
 	position := 0
 	cash := e.cash
 	var trades []Trade
 	var openTrade *Trade
+	equityCurve := make([]float64, len(bars))
+	equityCurve[0] = cash
 
 	for i := 1; i < len(bars); i++ {
 		sig := strategy.Next(i, bars)
@@ -107,30 +124,37 @@ func (e *Engine) Run(strategy Strategy, bars []indicator.Bar) *Result {
 			if position > 0 && openTrade != nil {
 				price := bars[i].Close * (1 - e.slippage)
 				proceeds := float64(position)*price*(1-e.commission) - 5
-				profit := proceeds - float64(position)*openTrade.EntryPrice*(1+e.commission)
+				costBasis := float64(position) * openTrade.EntryPrice * (1 + e.commission)
+				profit := proceeds - costBasis
 				cash += proceeds
 				openTrade.ExitPrice = price
 				openTrade.Profit = profit
-				openTrade.ReturnPct = profit / (float64(position)*openTrade.EntryPrice*(1+e.commission)) * 100
+				openTrade.ReturnPct = profit / costBasis * 100
 				trades = append(trades, *openTrade)
 				openTrade = nil
 				position = 0
 			}
 		}
+		// 逐 bar 记录总权益（现金 + 持仓市值），用于计算日收益率/回撤/夏普
+		equityCurve[i] = cash + float64(position)*bars[i].Close
 	}
 
+	// 末尾仍有持仓：按最后收盘价虚拟平仓，计入交易统计
+	finalEquity := cash
 	if position > 0 && openTrade != nil {
 		price := bars[len(bars)-1].Close
 		proceeds := float64(position) * price
-		cash += proceeds
+		costBasis := float64(position) * openTrade.EntryPrice * (1 + e.commission)
+		profit := proceeds - costBasis
+		finalEquity = cash + proceeds
 		openTrade.ExitPrice = price
-		openTrade.Profit = proceeds - float64(position)*openTrade.EntryPrice*(1+e.commission)
-		openTrade.ReturnPct = openTrade.Profit / (float64(position)*openTrade.EntryPrice*(1+e.commission)) * 100
+		openTrade.Profit = profit
+		openTrade.ReturnPct = profit / costBasis * 100
 		trades = append(trades, *openTrade)
+		equityCurve[len(bars)-1] = finalEquity
 	}
 
-	finalEquity := cash
-	perf := calcPerformance(e.cash, finalEquity, trades, len(bars))
+	perf := calcPerformance(equityCurve, trades)
 
 	return &Result{
 		Strategy:    strategy.Name(),
@@ -142,81 +166,182 @@ func (e *Engine) Run(strategy Strategy, bars []indicator.Bar) *Result {
 	}
 }
 
-func calcPerformance(initial, final float64, trades []Trade, bars int) Performance {
+// calcPerformance 基于逐 bar 资金曲线计算绩效，口径对齐 easy_tdx PerformanceAnalyzer：
+// total_return/annual_return/max_drawdown/win_rate/volatility 均为 0~1 比例，
+// sharpe/sortino 基于日收益率，avg_win/avg_loss/max_win/max_loss 为单笔收益率口径。
+func calcPerformance(equityCurve []float64, trades []Trade) Performance {
 	p := Performance{}
-	p.TotalReturn = final - initial
-	p.TotalReturnPct = p.TotalReturn / initial * 100
-	p.TotalTrades = len(trades)
+	if len(equityCurve) == 0 {
+		return p
+	}
+	initial := equityCurve[0]
+	final := equityCurve[len(equityCurve)-1]
+	p.StartCash = initial
+	p.EndValue = final
 
-	if bars > 0 {
-		years := float64(bars) / 252
-		if years > 0 && final > initial {
-			p.CAGR = (math.Pow(final/initial, 1/years) - 1) * 100
+	// 边界：资金曲线不足 2 根
+	if len(equityCurve) < 2 {
+		return p
+	}
+
+	// 日收益率（除零保护：前值为 0 跳过）
+	var dailyRets []float64
+	for i := 1; i < len(equityCurve); i++ {
+		prev := equityCurve[i-1]
+		if prev != 0 {
+			dailyRets = append(dailyRets, (equityCurve[i]-prev)/prev)
 		}
 	}
-
-	var wins, losses int
-	var totalWin, totalLoss float64
-	var returns []float64
-	for _, t := range trades {
-		returns = append(returns, t.ReturnPct)
-		if t.Profit > 0 {
-			wins++
-			totalWin += t.Profit
-		} else {
-			losses++
-			totalLoss += math.Abs(t.Profit)
-		}
-	}
-	p.WinningTrades = wins
-	p.LosingTrades = losses
-	if p.TotalTrades > 0 {
-		p.WinRate = float64(wins) / float64(p.TotalTrades) * 100
-	}
-	if wins > 0 {
-		p.AvgWin = totalWin / float64(wins)
-	}
-	if losses > 0 {
-		p.AvgLoss = totalLoss / float64(losses)
-	}
-	if totalLoss > 0 {
-		p.ProfitFactor = totalWin / totalLoss
-	} else if totalWin > 0 {
-		p.ProfitFactor = 999
+	if len(dailyRets) < 2 {
+		return p
 	}
 
-	if len(returns) > 1 {
-		mean := meanFloat(returns)
-		std := stdFloat(returns, mean)
-		if std > 0 {
-			p.SharpeRatio = mean / std * math.Sqrt(252)
-		}
-		p.AnnualVolatility = std * math.Sqrt(252)
+	// 1. 总收益率（比例）
+	if initial != 0 {
+		p.TotalReturn = final/initial - 1
 	}
+	p.TotalReturnPct = p.TotalReturn * 100
 
-	peak := initial
+	// 2. 年化收益率
+	n := len(dailyRets)
+	p.AnnualReturn = math.Pow(1+p.TotalReturn, 252.0/float64(n)) - 1
+	p.CAGR = p.AnnualReturn * 100
+
+	// 3. 最大回撤（0~1 正值，逐 bar 净值口径）
+	peak := equityCurve[0]
 	maxDD := 0.0
-	equity := initial
-	for _, t := range trades {
-		equity += t.Profit
-		if equity > peak {
-			peak = equity
+	maxDDIdx := 0
+	peakIdx := 0
+	curPeakIdx := 0
+	for i := 0; i < len(equityCurve); i++ {
+		if equityCurve[i] > peak {
+			peak = equityCurve[i]
+			curPeakIdx = i
 		}
-		dd := peak - equity
-		if dd > maxDD {
-			maxDD = dd
-		}
-	}
-	if final < peak {
-		dd := peak - final
-		if dd > maxDD {
-			maxDD = dd
+		if peak > 0 {
+			dd := (peak - equityCurve[i]) / peak
+			if dd > maxDD {
+				maxDD = dd
+				maxDDIdx = i
+				peakIdx = curPeakIdx
+			}
 		}
 	}
 	p.MaxDrawdown = maxDD
-	p.MaxDrawdownPct = maxDD / initial * 100
+	p.MaxDrawdownPct = maxDD * 100
+	p.MaxDDDuration = maxDDIdx - peakIdx
+
+	// 5. 夏普比率（基于日收益率）
+	rfDaily := 0.03 / 252
+	meanRet := meanFloat(dailyRets)
+	stdRet := stdFloat(dailyRets, meanRet)
+	if stdRet > 0 {
+		var sumExcess float64
+		for _, r := range dailyRets {
+			sumExcess += r - rfDaily
+		}
+		p.Sharpe = (sumExcess / float64(len(dailyRets))) / stdRet * math.Sqrt(252)
+	}
+	p.SharpeRatio = p.Sharpe
+
+	// 6. 索提诺比率（分母只用负收益标准差）
+	var negRets []float64
+	for _, r := range dailyRets {
+		if r-rfDaily < 0 {
+			negRets = append(negRets, r-rfDaily)
+		}
+	}
+	if len(negRets) > 0 {
+		negStd := stdFloat(negRets, meanFloat(negRets))
+		if negStd > 0 {
+			var sumExcess float64
+			for _, r := range dailyRets {
+				sumExcess += r - rfDaily
+			}
+			p.Sortino = (sumExcess / float64(len(dailyRets))) / negStd * math.Sqrt(252)
+		} else if meanRet-rfDaily > 0 {
+			p.Sortino = 999
+		}
+	} else if meanRet-rfDaily > 0 {
+		p.Sortino = 999
+	}
+
+	// 7. 卡玛比率
+	if p.MaxDrawdown > 1e-10 {
+		p.Calmar = p.AnnualReturn / p.MaxDrawdown
+	} else if p.AnnualReturn > 0 {
+		p.Calmar = 999
+	}
+
+	// 年化波动率
+	p.Volatility = stdRet * math.Sqrt(252)
+	p.AnnualVolatility = p.Volatility
+
+	// 交易统计（单笔收益率口径：ReturnPct 已是百分比，/100 转比例）
+	p.TotalTrades = len(trades)
+	var wins, losses int
+	var winReturns, loseReturns []float64
+	var totalWinPnl, totalLossPnl float64
+	for _, t := range trades {
+		ret := t.ReturnPct / 100
+		if t.Profit > 0 {
+			wins++
+			totalWinPnl += t.Profit
+			winReturns = append(winReturns, ret)
+		} else {
+			losses++
+			totalLossPnl += math.Abs(t.Profit)
+			loseReturns = append(loseReturns, ret)
+		}
+	}
+	p.WinTrades = wins
+	p.LoseTrades = losses
+	p.WinningTrades = wins
+	p.LosingTrades = losses
+	if p.TotalTrades > 0 {
+		p.WinRate = float64(wins) / float64(p.TotalTrades)
+	}
+	if len(winReturns) > 0 {
+		p.AvgWin = meanFloat(winReturns)
+		p.MaxWin = maxFloat(winReturns)
+	}
+	if len(loseReturns) > 0 {
+		p.AvgLoss = meanFloat(loseReturns)
+		p.MaxLoss = minFloat(loseReturns)
+	}
+	if totalLossPnl > 0 {
+		p.ProfitFactor = totalWinPnl / totalLossPnl
+	} else if totalWinPnl > 0 {
+		p.ProfitFactor = 999
+	}
 
 	return p
+}
+
+func maxFloat(v []float64) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	m := v[0]
+	for _, x := range v[1:] {
+		if x > m {
+			m = x
+		}
+	}
+	return m
+}
+
+func minFloat(v []float64) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	m := v[0]
+	for _, x := range v[1:] {
+		if x < m {
+			m = x
+		}
+	}
+	return m
 }
 
 func meanFloat(v []float64) float64 {

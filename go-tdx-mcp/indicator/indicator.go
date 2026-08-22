@@ -3,6 +3,7 @@ package indicator
 import "math"
 
 type Bar struct {
+	Date   string
 	Open   float64
 	High   float64
 	Low    float64

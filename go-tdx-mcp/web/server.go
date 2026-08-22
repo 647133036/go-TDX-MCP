@@ -28,10 +28,11 @@ var upgrader = websocket.Upgrader{
 }
 
 type Server struct {
-	client tdx.Client
-	addr   string
-	mux    *http.ServeMux
-	wsHub  *wsHub
+	client     tdx.Client
+	addr       string
+	mux        *http.ServeMux
+	wsHub      *wsHub
+	taskRunner *backtest.TaskRunner
 }
 
 type wsHub struct {
@@ -78,10 +79,11 @@ func (h *wsHub) broadcastFor(symbol string, data interface{}) {
 
 func NewServer(client tdx.Client, addr string) *Server {
 	s := &Server{
-		client: client,
-		addr:   addr,
-		mux:    http.NewServeMux(),
-		wsHub:  newWSHub(),
+		client:     client,
+		addr:       addr,
+		mux:        http.NewServeMux(),
+		wsHub:      newWSHub(),
+		taskRunner: backtest.NewTaskRunner(4),
 	}
 	s.registerRoutes()
 	return s
@@ -152,6 +154,40 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/offline/ex-daily", s.handleOfflineExDaily)
 	// WebSocket real-time feed
 	s.mux.HandleFunc("/ws/realtime/", s.handleWebSocket)
+
+	s.mux.HandleFunc("/api/v1/backtest/run/async", s.handleBacktestAsync)
+	s.mux.HandleFunc("/api/v1/backtest/tasks", s.handleBacktestTasks)
+	s.mux.HandleFunc("/api/v1/backtest/tasks/", s.handleBacktestTaskStatus)
+	s.mux.HandleFunc("/api/v1/backtest/optimize", s.handleBacktestOptimize)
+	s.mux.HandleFunc("/api/v1/backtest/portfolio", s.handleBacktestPortfolio)
+	s.mux.HandleFunc("/api/v1/backtest/multi-strategy", s.handleBacktestMultiStrategy)
+	s.mux.HandleFunc("/api/v1/backtest/strategies", s.handleBacktestStrategies)
+	s.mux.HandleFunc("/api/v1/strategies", s.handleStrategyStore)
+	s.mux.HandleFunc("/api/v1/strategies/", s.handleStrategyStoreByID)
+	s.mux.HandleFunc("/api/v1/minute", s.handleMinute)
+	s.mux.HandleFunc("/api/v1/minute/history", s.handleMinuteHistory)
+	s.mux.HandleFunc("/api/v1/transaction", s.handleTransaction)
+	s.mux.HandleFunc("/api/v1/transaction/history", s.handleTransactionHistory)
+	s.mux.HandleFunc("/api/v1/security/list", s.handleSecurityList)
+	s.mux.HandleFunc("/api/v1/security/list-all", s.handleSecurityListAll)
+	s.mux.HandleFunc("/api/v1/server/hosts", s.handleServerHosts)
+	s.mux.HandleFunc("/api/v1/server/test", s.handleServerTest)
+	s.mux.HandleFunc("/api/v1/server/switch", s.handleServerSwitch)
+	s.mux.HandleFunc("/api/v1/bars/index", s.handleBarsIndex)
+	s.mux.HandleFunc("/api/v1/board/change-ranking", s.handleBoardChangeRanking)
+	s.mux.HandleFunc("/api/v1/board/summary", s.handleBoardSummary)
+	s.mux.HandleFunc("/api/v1/company/category", s.handleCompanyCategory)
+	s.mux.HandleFunc("/api/v1/company/content", s.handleCompanyContent)
+	s.mux.HandleFunc("/api/v1/ex/minute", s.handleExMinute)
+	s.mux.HandleFunc("/api/v1/ex/transaction", s.handleExTransaction)
+	s.mux.HandleFunc("/api/v1/finance", s.handleFinance)
+	s.mux.HandleFunc("/api/v1/financial/file-list", s.handleFinancialFileList)
+	s.mux.HandleFunc("/api/v1/financial/records", s.handleFinancialRecords)
+	s.mux.HandleFunc("/api/v1/fund-flow/history", s.handleFundFlowHistory)
+	s.mux.HandleFunc("/api/v1/market/strength", s.handleMarketStrength)
+	s.mux.HandleFunc("/api/v1/factor/list", s.handleFactorList)
+	s.mux.HandleFunc("/api/v1/factor/compute", s.handleFactorCompute)
+	s.mux.HandleFunc("/api/v1/factor/analyze", s.handleFactorAnalyze)
 }
 
 func writeJSON(w http.ResponseWriter, data interface{}) {
@@ -355,13 +391,20 @@ func (s *Server) handleQuotes(w http.ResponseWriter, r *http.Request) {
 			if c == "" {
 				continue
 			}
+			upper := strings.ToUpper(c)
 			setcode := "0"
-			if strings.HasPrefix(c, "6") || strings.HasPrefix(c, "SH") {
+			code := c
+			if strings.HasPrefix(upper, "SH") {
+				setcode = "1"
+				code = upper[2:]
+			} else if strings.HasPrefix(upper, "SZ") {
+				setcode = "0"
+				code = upper[2:]
+			} else if strings.HasPrefix(c, "6") {
 				setcode = "1"
 			} else if strings.HasPrefix(c, "4") || strings.HasPrefix(c, "8") {
 				setcode = "2"
 			}
-			code := strings.TrimPrefix(strings.TrimPrefix(c, "SZ"), "SH")
 			stocks = append(stocks, struct {
 				Market string `json:"market"`
 				Code   string `json:"code"`
@@ -460,6 +503,7 @@ func (s *Server) fetchKlinesFromOffline(code string, market int, period string, 
 	result := make([]indicator.Bar, 0, len(bars))
 	for _, b := range bars {
 		result = append(result, indicator.Bar{
+			Date:   b.Date,
 			Open:   b.Open,
 			High:   b.High,
 			Low:    b.Low,
@@ -605,6 +649,7 @@ func (s *Server) handleChanlun(w http.ResponseWriter, r *http.Request) {
 	klines := make([]chanlun.Kline, 0, len(bars))
 	for _, b := range bars {
 		klines = append(klines, chanlun.Kline{
+			Date:   normalizeKlineDate(b.Date),
 			Open:   b.Open,
 			High:   b.High,
 			Low:    b.Low,
@@ -614,7 +659,34 @@ func (s *Server) handleChanlun(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	result := chanlun.Analyze(klines)
+	result.Symbol = code
+	result.Period = period
 	writeJSON(w, result)
+}
+
+// normalizeKlineDate 规范化 K 线日期：YYYYMMDD → YYYY-MM-DD，
+// YYYYMMDDHHMM → YYYY-MM-DD HH:MM；已是分隔符格式则原样返回。
+func normalizeKlineDate(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	allDigit := true
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			allDigit = false
+			break
+		}
+	}
+	if allDigit {
+		if len(s) == 8 {
+			return s[:4] + "-" + s[4:6] + "-" + s[6:8]
+		}
+		if len(s) >= 12 {
+			return s[:4] + "-" + s[4:6] + "-" + s[6:8] + " " + s[8:10] + ":" + s[10:12]
+		}
+	}
+	return s
 }
 
 func (s *Server) handleBacktest(w http.ResponseWriter, r *http.Request) {
@@ -1133,25 +1205,43 @@ func (s *Server) handleBoardRanking(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCapitalFlow(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	market, ok := parseMarket(r)
-	if code == "" || !ok {
-		writeError(w, 400, "code 和 market 参数必填")
+	if !ok {
+		writeError(w, 400, "market 参数必填")
 		return
 	}
-	// Use old northbound scraper (EastMoneyEnhanced NorthBoundDaily uses datacenter API that returns empty)
-	ns := scraper.NewNorthboundScraper()
-	flow, err := ns.GetDailyFlow(5)
-	if err == nil {
-		writeJSON(w, map[string]interface{}{"code": code, "market": market, "count": len(flow), "data": flow})
+
+	if code == "" {
+		// 无个股代码，返回北向资金整体数据
+		ns := scraper.NewNorthboundScraper()
+		flow, err := ns.GetDailyFlow(5)
+		if err == nil {
+			writeJSON(w, map[string]interface{}{"count": len(flow), "data": flow})
+			return
+		}
+		es := scraper.NewEastMoneyScraper()
+		newFlow, err2 := es.NorthBoundDaily("")
+		if err2 == nil {
+			writeJSON(w, map[string]interface{}{"count": len(newFlow), "data": newFlow})
+			return
+		}
+		writeError(w, 500, fmt.Sprintf("获取资金流向失败: %v, fallback: %v", err, err2))
 		return
 	}
-	// Fallback to EastMoneyEnhanced
-	es := scraper.NewEastMoneyScraper()
-	newFlow, err2 := es.NorthBoundDaily("")
-	if err2 == nil {
-		writeJSON(w, map[string]interface{}{"code": code, "market": market, "count": len(newFlow), "data": newFlow})
+
+	// 有个股代码，返回个股资金流
+	code = normalizeCode(code)
+	setcodeStr := fmt.Sprintf("%d.%s", market, code)
+	url := fmt.Sprintf("https://push2delay.eastmoney.com/api/qt/stock/fflow/daykline/get?secid=%s&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63&klt=101&lmt=20", setcodeStr)
+	hc := &http.Client{Timeout: 10 * time.Second}
+	respHTTP, err := hc.Get(url)
+	if err != nil {
+		writeError(w, 500, fmt.Sprintf("获取个股资金流失败: %v", err))
 		return
 	}
-	writeError(w, 500, fmt.Sprintf("获取资金流向失败: %v, fallback: %v", err, err2))
+	defer respHTTP.Body.Close()
+	var result interface{}
+	json.NewDecoder(respHTTP.Body).Decode(&result)
+	writeJSON(w, result)
 }
 
 func (s *Server) handleAuction(w http.ResponseWriter, r *http.Request) {
@@ -1686,6 +1776,8 @@ func parseKlineBars(data interface{}) ([]indicator.Bar, error) {
 
 	// Try array of objects (TCP format)
 	type klineObj struct {
+		Date   string  `json:"date"`
+		Time   string  `json:"time"`
 		Open   float64 `json:"open"`
 		Close  float64 `json:"close"`
 		High   float64 `json:"high"`
@@ -1697,7 +1789,11 @@ func parseKlineBars(data interface{}) ([]indicator.Bar, error) {
 	if err := json.Unmarshal(raw, &objs); err == nil && len(objs) > 0 {
 		bars := make([]indicator.Bar, len(objs))
 		for i, o := range objs {
-			bars[i] = indicator.Bar{Open: o.Open, Close: o.Close, High: o.High, Low: o.Low, Vol: o.Vol, Amount: o.Amount}
+			dt := o.Date
+			if dt == "" {
+				dt = o.Time
+			}
+			bars[i] = indicator.Bar{Date: dt, Open: o.Open, Close: o.Close, High: o.High, Low: o.Low, Vol: o.Vol, Amount: o.Amount}
 		}
 		return bars, nil
 	}
@@ -1751,6 +1847,7 @@ func parseEastMoneyKlines(klines []string) ([]indicator.Bar, error) {
 			continue
 		}
 		b := indicator.Bar{
+			Date:   parts[0],
 			Open:   toFloat64(parts[1]),
 			Close:  toFloat64(parts[2]),
 			High:   toFloat64(parts[3]),
@@ -1772,10 +1869,17 @@ func extractBarsFromListItem(listItem []struct{ Item []interface{} }) ([]indicat
 		if len(li.Item) < 9 {
 			continue
 		}
+		var dateStr string
+		if v, ok := li.Item[0].(string); ok {
+			dateStr = v
+		} else {
+			dateStr = fmt.Sprintf("%.0f", toFloat64(li.Item[0]))
+		}
 		b := indicator.Bar{
-			Open: toFloat64(li.Item[2]), High: toFloat64(li.Item[3]),
-			Low: toFloat64(li.Item[4]), Close: toFloat64(li.Item[5]),
-			Amount: toFloat64(li.Item[6]), Vol: toFloat64(li.Item[8]),
+			Date:   dateStr,
+			Open:   toFloat64(li.Item[2]), High: toFloat64(li.Item[3]),
+			Low:    toFloat64(li.Item[4]), Close: toFloat64(li.Item[5]),
+			Amount: toFloat64(li.Item[6]), Vol:   toFloat64(li.Item[8]),
 		}
 		bars = append(bars, b)
 	}

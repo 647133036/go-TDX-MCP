@@ -1,8 +1,6 @@
 package backtest
 
 import (
-	"math"
-
 	"github.com/tdx/go-tdx-mcp/indicator"
 )
 
@@ -30,91 +28,45 @@ type PerfMetrics struct {
 
 func CalcExtendedPerformance(initial, final float64, trades []Trade, bars int, equityCurve []float64) PerfMetrics {
 	p := PerfMetrics{}
-	p.TotalReturn = final - initial
-	p.TotalReturnPct = p.TotalReturn / initial * 100
-	p.TotalTrades = len(trades)
 	p.EquityCurve = equityCurve
+	// 复用 engine 绩效计算（基于逐 bar 资金曲线，对齐 easy_tdx 语义：比例口径、日收益率）
+	perf := calcPerformance(equityCurve, trades)
+	p.TotalReturn = perf.TotalReturn
+	p.TotalReturnPct = perf.TotalReturnPct
+	p.CAGR = perf.CAGR
+	p.MaxDrawdown = perf.MaxDrawdown
+	p.MaxDrawdownPct = perf.MaxDrawdownPct
+	p.SharpeRatio = perf.SharpeRatio
+	p.SortinoRatio = perf.Sortino
+	p.CalmarRatio = perf.Calmar
+	p.AnnualVolatility = perf.AnnualVolatility
+	p.WinRate = perf.WinRate
+	p.ProfitFactor = perf.ProfitFactor
+	p.AvgWin = perf.AvgWin
+	p.AvgLoss = perf.AvgLoss
+	p.TotalTrades = perf.TotalTrades
+	p.WinningTrades = perf.WinningTrades
+	p.LosingTrades = perf.LosingTrades
 
-	if bars > 0 {
-		years := float64(bars) / 252
-		if years > 0 && final > initial {
-			p.CAGR = (math.Pow(final/initial, 1/years) - 1) * 100
-		}
-	}
-
-	var wins, losses int
-	var totalWin, totalLoss, totalReturnVal float64
-	var returns []float64
-	var consecutiveWins, consecutiveLosses, maxConWins, maxConLosses int
-
+	// 连续盈亏统计（PerfMetrics 特有）
+	var maxConWins, maxConLosses, conWins, conLosses int
 	for _, t := range trades {
-		returns = append(returns, t.ReturnPct)
-		returns = append(returns, t.ReturnPct)
-		totalReturnVal += t.ReturnPct
 		if t.Profit > 0 {
-			wins++
-			totalWin += t.Profit
-			consecutiveWins++
-			consecutiveLosses = 0
-			if consecutiveWins > maxConWins {
-				maxConWins = consecutiveWins
+			conWins++
+			conLosses = 0
+			if conWins > maxConWins {
+				maxConWins = conWins
 			}
 		} else {
-			losses++
-			totalLoss += math.Abs(t.Profit)
-			consecutiveLosses++
-			consecutiveWins = 0
-			if consecutiveLosses > maxConLosses {
-				maxConLosses = consecutiveLosses
+			conLosses++
+			conWins = 0
+			if conLosses > maxConLosses {
+				maxConLosses = conLosses
 			}
 		}
 	}
-	p.WinningTrades = wins
-	p.LosingTrades = losses
 	p.MaxConsecutiveWins = maxConWins
 	p.MaxConsecutiveLosses = maxConLosses
-	if p.TotalTrades > 0 {
-		p.WinRate = float64(wins) / float64(p.TotalTrades) * 100
-	}
-	if wins > 0 {
-		p.AvgWin = totalWin / float64(wins)
-	}
-	if losses > 0 {
-		p.AvgLoss = totalLoss / float64(losses)
-	}
-	if totalLoss > 0 {
-		p.ProfitFactor = totalWin / totalLoss
-	} else if totalWin > 0 {
-		p.ProfitFactor = 999
-	}
-
-	if len(returns) > 1 {
-		mean := meanFloat(returns)
-		std := stdFloat(returns, mean)
-		if std > 0 {
-			p.SharpeRatio = mean / std * math.Sqrt(252)
-		}
-		p.AnnualVolatility = std * math.Sqrt(252)
-
-		downsideReturns := make([]float64, 0)
-		for _, r := range returns {
-			if r < 0 {
-				downsideReturns = append(downsideReturns, r)
-			}
-		}
-		if len(downsideReturns) > 0 {
-			downMean := meanFloat(downsideReturns)
-			downStd := stdFloat(downsideReturns, downMean)
-			if downStd > 0 {
-				p.SortinoRatio = mean / downStd * math.Sqrt(252)
-			}
-		}
-	}
-
-	if p.MaxDrawdownPct > 0 {
-		p.CalmarRatio = p.TotalReturnPct / p.MaxDrawdownPct
-	}
-
 	return p
 }
 

@@ -44,3 +44,22 @@ Entries discovered by the Agent during task execution should follow this format:
   - TDX TCP server (`tdxhub.icfqs.com:7615`) has F10/board/capital flow features unregistered (503), but K-line, quotes, and basic data work
   - Build command: `cd /workspace/go-tdx-mcp && go build -o /tmp/tdx-mcp .`
   - Server is started via background terminal on port 8796 with `--web` flag
+
+[Project Knowledge Summary]
+- Date: 2026-08-22
+- Context: Discovered by Agent while fixing K-line Date and chanlun date bugs
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - Critical gotcha: web package (web/server.go) and tdx package (tdx/tools_expanded.go) both define `parseKlineBars` and `parseChanlunKlines` with the same name. The web REST path (fetchKlines/handleChanlun) calls the web package versions; the MCP path (tools_expanded.go) calls the tdx package versions. When fixing K-line parsing, BOTH copies must be patched.
+  - Data path priority in fetchKlines: PBFXT (TQLEX) → offline .day files → eastmoney HTTP API
+  - PeriodToCode (tdx/types.go) must handle both "5min" and "5m" formats; web layer uses "5m"/"15m"/"30m"/"60m" while TDX protocol uses "5min" etc. Missing "5m" mapping caused 5m bars to fall back to daily period code 4.
+
+[Project Knowledge Summary]
+- Date: 2026-08-22
+- Context: Discovered by Agent while building and testing go-tdx-mcp
+- Category: Build Methods
+- Instructions:
+  - Compilation must use background_terminal_create with memory_percent=40 (peak ~180-320MB in 8GB env). Command: `cd /workspace/go-tdx-mcp && go build -o /tmp/tdx-mcp .`
+  - Server start: `/tmp/tdx-mcp --web --port=8000` via background terminal (timeout=0 for long-running)
+  - REST test endpoints: /api/v1/health, /api/v1/bars?code=000001&market=sz&period=day&count=N, /api/v1/chanlun/analyze?code=000001&market=sz&period=day&count=100, /api/v1/backtest/run?code=000001&market=sz&period=day&count=200&strategy=ma_cross&cash=100000, /api/v1/indicator/compute_all?code=000001&market=sz&period=day&count=10&indicators=MACD,KDJ
+  - backtest initial cash param name is "cash" (not "initial_cash")
