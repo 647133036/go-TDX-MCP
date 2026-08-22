@@ -277,6 +277,68 @@ func (s *Server) handleBacktestStrategies(w http.ResponseWriter, r *http.Request
 	writeJSON(w, schemas)
 }
 
+func (s *Server) handleSignalScan(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Strategies []struct {
+			Strategy      string            `json:"strategy"`
+			StrategyLabel string            `json:"strategy_label"`
+			Params        map[string]float64 `json:"params"`
+			Code          string            `json:"code"`
+			Market        int               `json:"market"`
+			Window        int               `json:"window"`
+			Bars          []indicator.Bar   `json:"bars"`
+			Period        string            `json:"period"`
+			Count         int               `json:"count"`
+			StrategyID    string            `json:"strategy_id"`
+			StrategyName  string            `json:"strategy_name"`
+			Kind          string            `json:"kind"`
+			Category      string            `json:"category"`
+		} `json:"strategies"`
+		Window int `json:"window"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "无效的请求体")
+		return
+	}
+	if req.Window <= 0 {
+		req.Window = 30
+	}
+	if len(req.Strategies) == 0 {
+		writeJSON(w, backtest.SignalScanResult{Rows: []backtest.ScanRow{}, Total: 0})
+		return
+	}
+
+	targets := make([]backtest.ScanTarget, 0, len(req.Strategies))
+	for _, item := range req.Strategies {
+		bars := item.Bars
+		if len(bars) == 0 && item.Code != "" {
+			market := item.Market
+			if market < 0 {
+				market = 0
+			}
+			fetched, err := s.fetchKlines(item.Code, market, item.Period, item.Count, 0)
+			if err != nil {
+				targets = append(targets, backtest.ScanTarget{
+					Strategy: item.Strategy, StrategyLabel: item.StrategyLabel, Params: item.Params,
+					Code: item.Code, Market: market, Error: err.Error(),
+					StrategyID: item.StrategyID, StrategyName: item.StrategyName,
+					Kind: item.Kind, Category: item.Category,
+				})
+				continue
+			}
+			bars = fetched
+		}
+		targets = append(targets, backtest.ScanTarget{
+			Strategy: item.Strategy, StrategyLabel: item.StrategyLabel, Params: item.Params,
+			Code: item.Code, Market: item.Market, Bars: bars, Window: item.Window,
+			StrategyID: item.StrategyID, StrategyName: item.StrategyName,
+			Kind: item.Kind, Category: item.Category,
+		})
+	}
+	result := backtest.RunSignalScan(targets, req.Window)
+	writeJSON(w, result)
+}
+
 func (s *Server) handleStrategyStore(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		writeJSON(w, []interface{}{})

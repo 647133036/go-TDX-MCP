@@ -162,6 +162,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/backtest/portfolio", s.handleBacktestPortfolio)
 	s.mux.HandleFunc("/api/v1/backtest/multi-strategy", s.handleBacktestMultiStrategy)
 	s.mux.HandleFunc("/api/v1/backtest/strategies", s.handleBacktestStrategies)
+	s.mux.HandleFunc("/api/v1/backtest/signal-scan", s.handleSignalScan)
 	s.mux.HandleFunc("/api/v1/strategies", s.handleStrategyStore)
 	s.mux.HandleFunc("/api/v1/strategies/", s.handleStrategyStoreByID)
 	s.mux.HandleFunc("/api/v1/minute", s.handleMinute)
