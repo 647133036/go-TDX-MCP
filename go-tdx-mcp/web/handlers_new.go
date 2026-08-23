@@ -340,46 +340,69 @@ func (s *Server) handleSignalScan(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStrategyStore(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		writeJSON(w, []interface{}{})
+	store := s.strategyStore
+	if store == nil {
+		writeError(w, 500, "策略存储不可用")
 		return
 	}
-	if r.Method == http.MethodPost {
-		var req struct {
-			Name     string            `json:"name"`
-			Strategy string            `json:"strategy"`
-			Params   map[string]float64 `json:"params"`
-			Cash     float64           `json:"cash"`
+	switch r.Method {
+	case http.MethodGet:
+		records, err := store.List()
+		if err != nil {
+			writeError(w, 500, "读取策略失败: "+err.Error())
+			return
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, records)
+	case http.MethodPost:
+		var rec SavedStrategy
+		if err := json.NewDecoder(r.Body).Decode(&rec); err != nil {
 			writeError(w, 400, "无效的请求体")
 			return
 		}
-		id := shortTaskID()
-		writeJSON(w, map[string]interface{}{
-			"id": id, "name": req.Name, "strategy": req.Strategy,
-			"params": req.Params, "created_at": time.Now().Format(time.RFC3339),
-		})
-		return
+		if rec.Name == "" {
+			writeError(w, 400, "name 参数必填")
+			return
+		}
+		saved, err := store.Add(&rec)
+		if err != nil {
+			writeError(w, 500, "保存策略失败: "+err.Error())
+			return
+		}
+		writeJSON(w, saved)
+	default:
+		writeError(w, 405, "方法不支持")
 	}
-	writeError(w, 405, "方法不支持")
 }
 
 func (s *Server) handleStrategyStoreByID(w http.ResponseWriter, r *http.Request) {
+	store := s.strategyStore
+	if store == nil {
+		writeError(w, 500, "策略存储不可用")
+		return
+	}
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/strategies/")
 	if id == "" {
 		writeError(w, 400, "strategy_id 必填")
 		return
 	}
-	if r.Method == http.MethodGet {
-		writeJSON(w, map[string]string{"id": id, "error": "未找到策略"})
-		return
+	switch r.Method {
+	case http.MethodGet:
+		rec, err := store.Get(id)
+		if err != nil || rec == nil {
+			writeError(w, 404, "策略不存在")
+			return
+		}
+		writeJSON(w, rec)
+	case http.MethodDelete:
+		deleted, err := store.Delete(id)
+		if err != nil {
+			writeError(w, 500, "删除失败: "+err.Error())
+			return
+		}
+		writeJSON(w, map[string]interface{}{"id": id, "deleted": deleted})
+	default:
+		writeError(w, 405, "方法不支持")
 	}
-	if r.Method == http.MethodDelete {
-		writeJSON(w, map[string]string{"deleted": id})
-		return
-	}
-	writeError(w, 405, "方法不支持")
 }
 
 func (s *Server) handleMinute(w http.ResponseWriter, r *http.Request) {

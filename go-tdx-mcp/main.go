@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/user"
+	"path/filepath"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/server"
@@ -13,11 +15,12 @@ import (
 )
 
 type Config struct {
-	Token     string `json:"token"`
-	Timeout   int    `json:"timeout"`
-	WebPort   int    `json:"web_port"`
-	TDxHost   string `json:"tdx_host"`
-	TDxPort   int    `json:"tdx_port"`
+	Token    string `json:"token"`
+	Timeout  int    `json:"timeout"`
+	WebPort  int    `json:"web_port"`
+	TDxHost  string `json:"tdx_host"`
+	TDxPort  int    `json:"tdx_port"`
+	DBPath   string `json:"db_path"`
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -35,7 +38,18 @@ func loadConfig(path string) (*Config, error) {
 	if cfg.WebPort <= 0 {
 		cfg.WebPort = 8000
 	}
+	if cfg.DBPath == "" {
+		u, _ := user.Current()
+		cfg.DBPath = filepath.Join(u.HomeDir, ".tdx-mcp", "strategies.db")
+	}
 	return &cfg, nil
+}
+
+func setDefaultDBPath(cfg *Config) {
+	if cfg.DBPath == "" {
+		u, _ := user.Current()
+		cfg.DBPath = filepath.Join(u.HomeDir, ".tdx-mcp", "strategies.db")
+	}
 }
 
 type runMode int
@@ -76,6 +90,7 @@ func webPortFromArgs() int {
 
 func main() {
 	cfg := &Config{Timeout: 30, WebPort: 8000}
+	setDefaultDBPath(cfg)
 
 	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "--") {
 		var err error
@@ -83,15 +98,18 @@ func main() {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "警告: 无法加载配置文件 %s: %v\n", os.Args[1], err)
 			cfg = &Config{Timeout: 30, WebPort: 8000}
+			setDefaultDBPath(cfg)
 		}
 	} else {
 		if _, err := os.Stat("config.json"); err == nil {
 			loaded, err := loadConfig("config.json")
 			if err == nil {
 				cfg = loaded
+				setDefaultDBPath(cfg)
 			}
 		}
 	}
+	setDefaultDBPath(cfg)
 
 	if p := webPortFromArgs(); p > 0 {
 		cfg.WebPort = p
@@ -223,7 +241,7 @@ func runCombined(client *tdx.UnifiedClient, cfg *Config) {
 		server.WithStateLess(true),
 	)
 
-	webServer := web.NewServer(client, fmt.Sprintf("0.0.0.0:%d", cfg.WebPort))
+	webServer := web.NewServer(client, fmt.Sprintf("0.0.0.0:%d", cfg.WebPort), cfg.DBPath)
 
 	rootMux := http.NewServeMux()
 	rootMux.Handle("/mcp", httpMCP)

@@ -28,11 +28,12 @@ var upgrader = websocket.Upgrader{
 }
 
 type Server struct {
-	client     tdx.Client
-	addr       string
-	mux        *http.ServeMux
-	wsHub      *wsHub
-	taskRunner *backtest.TaskRunner
+	client        tdx.Client
+	addr          string
+	mux           *http.ServeMux
+	wsHub         *wsHub
+	taskRunner    *backtest.TaskRunner
+	strategyStore *StrategyStore
 }
 
 type wsHub struct {
@@ -77,13 +78,21 @@ func (h *wsHub) broadcastFor(symbol string, data interface{}) {
 	}
 }
 
-func NewServer(client tdx.Client, addr string) *Server {
+func NewServer(client tdx.Client, addr string, dbPath string) *Server {
 	s := &Server{
 		client:     client,
 		addr:       addr,
 		mux:        http.NewServeMux(),
 		wsHub:      newWSHub(),
 		taskRunner: backtest.NewTaskRunner(4),
+	}
+	if dbPath != "" {
+		store, err := GetStrategyStore(dbPath)
+		if err != nil {
+			log.Printf("策略存储初始化失败 (可忽略): %v", err)
+		} else {
+			s.strategyStore = store
+		}
 	}
 	s.registerRoutes()
 	return s
