@@ -1,8 +1,8 @@
-# TDX Finance MCP v1.0.3
+# TDX Finance MCP v1.0.4
 
-通达信金融数据 MCP 服务器，提供 A 股、港股、美股、加密货币、期货等多市场金融数据服务。
+通达信金融数据 MCP 服务器，提供 A 股、港股、美股、加密货币、期货、基金等多市场金融数据服务。
 
-**443+ 个 MCP 工具** + **45+ 个投资技能**，覆盖实时行情、K 线、技术指标、缠论分析、量化回测、资金流向、板块分析、基金数据、宏观数据、新闻情感等全场景。
+**215 个 MCP 工具** + **45+ 个投资技能**，覆盖实时行情、K 线、技术指标、缠论分析、量化回测、资金流向、板块分析、基金数据、宏观数据、新闻情感等全场景。混合模式下另提供约 100 个 REST API 端点与 WebSocket 实时推送。
 
 ## 重要说明：同代码标的区分
 
@@ -44,13 +44,13 @@
 
 ```bash
 git clone https://github.com/647133036/go-TDX-MCP.git
-cd go-TDX-MCP
+cd go-TDX-MCP/go-tdx-mcp
 go build -o go-tdx-mcp .
 ```
 
 ### 配置
 
-创建 `config.json`：
+创建 `config.json`（完整字段）：
 
 ```json
 {
@@ -58,19 +58,27 @@ go build -o go-tdx-mcp .
   "timeout": 30,
   "web_port": 8000,
   "tdx_host": "",
-  "tdx_port": 0
+  "tdx_port": 0,
+  "db_path": ""
 }
 ```
 
-或通过环境变量：
+| 字段 | 说明 | 默认值 |
+|------|------|--------|
+| `token` | 通达信 HTTP API Token（可选，部分免费数据源不需要） | 空 |
+| `timeout` | 请求超时秒数 | 30 |
+| `web_port` | Web/混合模式监听端口 | 8000 |
+| `tdx_host` | 通达信 TCP 服务器地址（留空自动选择最快主机） | 空 |
+| `tdx_port` | 通达信 TCP 服务器端口 | 0 |
+| `db_path` | 策略存储数据库路径 | `~/.tdx-mcp/strategies.db` |
+
+环境变量：
 
 | 变量 | 说明 |
 |------|------|
-| `TDX_TOKEN` | 通达信 HTTP API Token |
-| `TDX_HOST` | 通达信 TCP 服务器地址（可选） |
-| `TDX_PORT` | 通达信 TCP 服务器端口（可选） |
+| `TDX_TOKEN` | 通达信 HTTP API Token，优先级高于配置文件 |
 
-环境变量优先级高于配置文件。
+> 加密货币（Binance）、基金净值、融资融券、龙虎榜、可转债、期货等数据源免费无需 Token。
 
 ### 集成 Claude Desktop
 
@@ -94,142 +102,151 @@ go build -o go-tdx-mcp .
 
 | 类别 | 数量 | 核心能力 |
 |------|------|----------|
-| Core（核心） | 17 | 实时报价、K 线、股票信息、选股、指标选择 |
-| Expanded（扩展） | 132 | 板块行情、资金流、缠论、回测、财务、公告、离线数据 |
-| V3（高级） | 18 | 市场概览、板块资金流、涨跌停、财务指标、宏观、舆情、爬虫 |
-| New（新增） | 276 | 加密货币、基金净值、融资融券、龙虎榜、可转债、期货、因子计算、选股扫描、量化回测组合、投资组合优化、RAG 查询、缠论全套、AI 分析、表格解析、新闻情感、东财增强数据 |
-| **合计** | **443** | |
+| Core（核心） | 6 | 实时报价、K 线、自然语言检索、智能选股、指标选择、F10 内部 API |
+| Expanded（扩展） | 64 | 分时/逐笔、板块行情、资金流、技术指标计算、缠论、回测、财务、公告、离线数据、扩展市场（港美股期货） |
+| V3（高级） | 8 | 市场概览、板块资金流、涨跌停、财务指标、宏观、舆情、网页表格爬虫、自然语言问答 |
+| New（新增） | 137 | 加密货币、基金、融资融券、龙虎榜、可转债、期货、北向资金、因子计算、选股扫描、增强回测、投资组合、缠论全套、表格解析、OCR、RAG、东财增强数据系列 |
+| **合计** | **215** | 全部工具均有对应处理器，注册成功率 100% |
 
 ### 代表性工具
 
 ```
-tdx_kline             A 股 K 线（周期/除权/数量可选）
-tdx_quotes            实时报价（买盘/卖盘/五档）
-tdx_kline_data        K 线数据（多周期/复权）
-tdx_capital_flow      个股/板块资金流向
-tdx_factor_compute    因子计算（MA/MACD/RSI/ATR/布林带等）
-tdx_factor_analyze    因子分析
-tdx_screen_scan       选股扫描（策略组合）
-tdx_enhanced_backtest 量化回测（单策略/多策略/组合模式）
-tdx_chanlun_merge_klines   缠论分型/K 线合并
+tdx_quotes            A 股实时行情（报价/五档盘口/涨跌幅）
+tdx_kline             A 股 K 线（多周期/前复权）
+tdx_kline_data        K 线数据（日/周/月/分钟）
+tdx_quote_realtime    实时报价（单只/多只）
+tdx_capital_flow      个股主力资金流向
+tdx_factor_compute    因子计算（momentum/technical/volume 等）
+tdx_factor_analyze    因子分析（IC/分层收益/多空）
+tdx_screen_scan       技术信号扫描（MACD金叉/KDJ金叉/放量等）
+tdx_enhanced_backtest 增强回测（16 策略+滑点+执行模拟）
+tdx_chanlun_merge_klines   缠论 K 线合并
 tdx_chanlun_build_bi       缠论笔构建
-tdx_chanlun_build_zhong_shu 缠论中枢
-tdx_chanlun_find_mai_mai_dian 缠论买卖点
-tdx_tecrypto_data    加密货币行情
-tdx_tecrypto_kline   加密货币 K 线
-tdx_fund_nav         基金净值
-tdx_margin_trade     融资融券
-tdx_dragon_tiger     龙虎榜
-tdx_convertible_bond 可转债
-tdx_futures_quote    期货行情
-tdx_northbound_flow  北向资金
-tdx_northbound_top10 北向持股 Top10
-tdx_market_overview   市场概览
-tdx_security_filter  证券筛选
-tdx_stock_basic_info 个股基本信息
-tdx_news_search      新闻搜索
-tdx_eastmoney_*      东方财富增强数据系列
-tdx_table_parser_*   表格解析工具系列
-tdx_ocr_recognize    OCR 图像识别
+tdx_chanlun_build_zhongshu 缠论中枢
+tdx_chanlun_find_maimaidian 缠论买卖点
+tdx_tecrypto_data     加密货币行情（Binance）
+tdx_tecrypto_kline    加密货币 K 线
+tdx_fund_nav          基金净值
+tdx_margin_trade      融资融券
+tdx_dragon_tiger      龙虎榜
+tdx_convertible_bond  可转债
+tdx_futures_quote     期货报价
+tdx_northbound_flow   北向资金实时净流入
+tdx_northbound_top10  北向资金十大成交
+tdx_market_overview   市场概览（涨跌家数/涨停/跌停）
+tdx_security_filter   证券筛选
+tdx_stock_basic_info  个股基本信息
+tdx_news_search       新闻搜索
+tdx_news_sentiment    新闻情感分析
+tdx_eastmoney_realtime_quote  东财实时报价
+tdx_eastmoney_capital_flow   东财资金流向
+tdx_table_parser_url  表格解析（URL/HTML→CSV/JSON）
+tdx_ocr_recognize     OCR 图像识别
+tdx_rag_query         RAG 智能问答
+wenda_macro_query     自然语言宏观/策略问答
+tdx_macro_data        宏观经济数据（CPI/GDP/PMI/M2）
 ```
 
 ## REST API
 
-混合模式下所有 MCP 工具均有对应的 REST 端点，位于 `/api/v1/` 路径下。
+混合模式下约 100 个端点，位于 `/api/v1/` 路径下，均与 MCP 工具对应。
 
-### 行情数据
+### 行情与 K 线
 
 | 端点 | 方法 | 参数 | 说明 |
 |------|------|------|------|
-| `/api/v1/quotes` | GET | `codes` | 实时报价（支持多代码） |
+| `/api/v1/quotes` | GET | `codes` | 实时报价（多代码） |
 | `/api/v1/bars` | GET | `code`, `market`, `period`, `count` | K 线数据 |
-| `/api/v1/bars-index` | GET | `code`, `market`, `period`, `count` | 指数 K 线 |
+| `/api/v1/bars/index` | GET | `code`, `market`, `period`, `count` | 指数 K 线 |
 | `/api/v1/symbol-info` | GET | `code`, `market` | 标的基本信息 |
 | `/api/v1/quote-list` | GET | `count`, `sort_type` | 行情列表 |
 | `/api/v1/market-stat` | GET | - | 市场统计 |
+| `/api/v1/market-overview` | GET | - | 市场概览 |
+| `/api/v1/market/strength` | GET | - | 市场强度 |
+| `/api/v1/minute`、`/api/v1/minute/history`、`/api/v1/minute/multi` | GET | `code`, `market` | 分时数据 |
+| `/api/v1/transaction`、`/api/v1/transaction/history` | GET | `code`, `market` | 逐笔成交 |
 
-### 技术指标
+### 技术指标与因子
 
-| 端点 | 方法 | 参数 | 说明 |
-|------|------|------|------|
-| `/api/v1/indicator/list` | GET | - | 指标列表（34 个） |
-| `/api/v1/indicator/compute` | GET/POST | `code`, `market`, `indicators` 或 POST body | 指标计算 |
-| `/api/v1/indicator/compute_all` | GET | `code`, `market`, `indicators` | 批量计算 |
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/v1/indicator/list` | GET | 指标列表 |
+| `/api/v1/indicator/compute` | GET/POST | 指标计算 |
+| `/api/v1/indicator/compute_all` | GET | 批量计算 |
+| `/api/v1/factor/list` | GET | 因子列表 |
+| `/api/v1/factor/compute` | GET | 因子计算 |
+| `/api/v1/factor/analyze` | GET | 因子分析 |
+| `/api/v1/volume-profile` | GET | 量价分析 |
 
 ### 缠论与回测
 
-| 端点 | 方法 | 参数 | 说明 |
-|------|------|------|------|
-| `/api/v1/chanlun/analyze` | GET | `code`, `market`, `period`, `count` | 缠论分析（分型/笔/中枢/买卖点） |
-| `/api/v1/backtest/run` | GET/POST | `code`, `market`, `strategy`, `count` | 量化回测 |
+| 端点 | 说明 |
+|------|------|
+| `/api/v1/chanlun/analyze`、`/api/v1/chanlun/multi` | 缠论分析（分型/笔/中枢/买卖点） |
+| `/api/v1/backtest/run`、`/run/async`、`/run-all` | 回测执行 |
+| `/api/v1/backtest/tasks`、`/tasks/{id}` | 回测任务状态 |
+| `/api/v1/backtest/optimize`、`/portfolio`、`/multi-strategy` | 组合回测 |
+| `/api/v1/backtest/signal-scan`、`/signal-rank` | 信号扫描/排名 |
+| `/api/v1/backtest/strategies`、`/api/v1/strategies` | 策略管理（SQLite 存储） |
 
 ### 财务与公告
 
-| 端点 | 方法 | 参数 | 说明 |
-|------|------|------|------|
-| `/api/v1/financial/report` | GET | `code`, `type` | 财务报表（利润表/资产负债表/现金流量表） |
-| `/api/v1/announcements` | GET | `code`, `count` | 公告列表 |
+| 端点 | 说明 |
+|------|------|
+| `/api/v1/financial/report`、`/file-list`、`/records`、`/api/v1/finance` | 财务报表与文件 |
+| `/api/v1/announcements` | 公告列表 |
+| `/api/v1/company/category`、`/content` | 公司资料 |
 
 ### 资金与板块
 
-| 端点 | 方法 | 参数 | 说明 |
-|------|------|------|------|
-| `/api/v1/capital-flow` | GET | `code`, `market` | 资金流向 |
-| `/api/v1/auction` | GET | `code`, `market` | 集合竞价 |
-| `/api/v1/unusual` | GET | `market`, `count` | 异动监控 |
-| `/api/v1/board/list` | GET | `board_type`, `top_n` | 板块列表 |
-| `/api/v1/board/members` | GET | `board_symbol`, `count` | 板块成分股 |
-| `/api/v1/block` | GET | `file` | 板块文件数据（`block_zs.dat`/`block_gn.dat`/`block_fz.dat`/`block_fy.dat`） |
-| `/api/v1/market-overview` | GET | - | 市场概览 |
+| 端点 | 说明 |
+|------|------|
+| `/api/v1/capital-flow`、`/fund-flow`、`/fund-flow/history` | 资金流向 |
+| `/api/v1/auction` | 集合竞价 |
+| `/api/v1/unusual` | 异动监控 |
+| `/api/v1/board/list`、`/members`、`/ranking`、`/change-ranking`、`/summary` | 板块数据 |
+| `/api/v1/belong-board`、`/block` | 个股板块归属/板块文件 |
 
-### 扩展市场
+### 扩展市场（港美股/期货）
 
-| 端点 | 方法 | 参数 | 说明 |
-|------|------|------|------|
-| `/api/v1/ex/markets` | GET | - | 扩展市场列表 |
-| `/api/v1/ex/quote` | GET | `ex_market`, `code` | 扩展市场报价 |
-| `/api/v1/ex/bars` | GET | `ex_market`, `code` | 扩展市场 K 线 |
+| 端点 | 说明 |
+|------|------|
+| `/api/v1/ex/markets` | 扩展市场列表 |
+| `/api/v1/ex/quote`、`/quotes`、`/quotes-list` | 扩展市场报价 |
+| `/api/v1/ex/bars`、`/minute`、`/transaction`、`/transaction-all`、`/chart-sampling` | 扩展市场 K 线/分时 |
+| `/api/v1/ex/list` | 扩展市场标的列表 |
 
-### 选股与信号
+### 爬虫与宏观数据
 
-| 端点 | 方法 | 参数 | 说明 |
-|------|------|------|------|
-| `/api/v1/screen/scan` | GET/POST | `strategy`, `codes`, `period` 等 | 选股扫描 |
-| `/api/v1/screen/rank` | GET/POST | `strategy`, `codes` | 信号排名 |
+| 端点 | 说明 |
+|------|------|
+| `/api/v1/scraper` | 全量股票列表 |
+| `/api/v1/scraper/sector-boards` | 板块数据 |
+| `/api/v1/scraper/northbound-flow`、`/northbound-stocks`、`/northbound-holders` | 北向资金 |
+| `/api/v1/scraper/fund-nav`、`/fund-holding`、`/fund-search` | 基金数据 |
+| `/api/v1/scraper/margin-trade` | 融资融券 |
+| `/api/v1/scraper/hkus-quote`、`/crypto` | 港美股/加密货币 |
+| `/api/v1/macro-data`、`/api/v1/news-sentiment` | 宏观/舆情 |
 
-### 宏观数据
+### 离线数据（依赖本地通达信数据）
 
-| 端点 | 方法 | 参数 | 说明 |
-|------|------|------|------|
-| `/api/v1/macro-data` | GET | `indicator`, `count` | 宏观经济数据（CPI/GDP/PMI/M2/SHIBOR 等） |
-
-### 综合爬虫
-
-| 端点 | 方法 | 参数 | 说明 |
-|------|------|------|------|
-| `/api/v1/scraper` | GET | - | 全量股票列表 |
-| `/api/v1/scraper/sector-boards` | GET | `board_type` | 板块数据 |
-| `/api/v1/scraper/northbound-flow` | GET | `days` | 北向资金流向 |
-| `/api/v1/scraper/northbound-stocks` | GET | `count` | 北向持股明细 |
-| `/api/v1/scraper/northbound-holders` | GET | `count` | 北向持仓机构 |
-| `/api/v1/scraper/margin-trade` | GET | - | 融资融券余额 |
-| `/api/v1/scraper/fund-search` | GET | `keyword`, `page_size` | 基金搜索 |
-| `/api/v1/scraper/fund-nav` | GET | `code`, `count` | 基金净值 |
-| `/api/v1/scraper/fund-holding` | GET | `code` | 基金持仓 |
-| `/api/v1/scraper/hkus-quote` | GET | `code`, `market` | 港股行情 |
-| `/api/v1/scraper/crypto` | GET | `symbols` | 加密货币行情 |
-
-### 离线数据
-
-| 端点 | 方法 | 参数 | 说明 |
-|------|------|------|------|
-| `/api/v1/offline/home` | GET | - | 检测 TDX 数据目录 |
-| `/api/v1/offline/daily` | GET | `code`, `market`, `minType` | 日线/分钟线数据 |
-| `/api/v1/offline/min` | GET | `code`, `market`, `minType` | 分钟线数据（5/15/30/60 分钟） |
-| `/api/v1/offline/gbbq` | GET | `code`, `market` | 股本变迁数据 |
-| `/api/v1/offline/blocks` | GET | `file` | 板块文件（白名单：`block_zs.dat`/`block_gn.dat`/`block_fz.dat`/`block_fy.dat`） |
+| 端点 | 说明 |
+|------|------|
+| `/api/v1/offline/home` | 检测 TDX 数据目录 |
+| `/api/v1/offline/daily`、`/min` | 日线/分钟线 |
+| `/api/v1/offline/gbbq` | 股本变迁 |
+| `/api/v1/offline/blocks` | 板块文件（白名单 4 个文件名） |
+| `/api/v1/offline/ex-files`、`/ex-daily` | 扩展市场离线数据 |
 
 > 离线端点依赖本地通达信客户端数据（`vipdoc` 目录），无 TDX 安装时返回 404。
+
+### 证券与系统
+
+| 端点 | 说明 |
+|------|------|
+| `/api/v1/security/list`、`/list-all`、`/security-count` | 证券列表/数量 |
+| `/api/v1/xdxr`、`/history-orders`、`/index/info`、`/index/momentum` | 除权除息/历史/指数 |
+| `/api/v1/server/hosts`、`/test`、`/switch`、`/server-info` | 服务器管理（`/test` 为白名单模式） |
 
 ### WebSocket 实时推送
 
@@ -237,84 +254,78 @@ tdx_ocr_recognize    OCR 图像识别
 |------|------|------|
 | `/ws/realtime/{symbol}` | WebSocket | 3 秒轮询推送实时行情 |
 
-用法：`ws://host/ws/realtime/000001`（深市，默认）或 `ws://host/ws/realtime/SH600000`（沪市）/ `ws://host/ws/realtime/SZ000001`（深市显式指定）
-
-> 注意：`000001` 不加前缀默认为深市平安银行，查上证指数需使用 `SH000001`。
-
-### 系统信息
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/v1/health` | GET | 健康检查 |
-| `/api/v1/server-info` | GET | 服务器信息 |
-| `/api/v1/server/test` | GET | 服务器连通性测试（白名单模式） |
-| `/api/v1/fetch-urls` | GET | 批量抓取 URL（仅允许指定白名单域名） |
-| `/` | GET | API 文档首页 |
+用法：`ws://host/ws/realtime/000001`（深市，默认）或 `ws://host/ws/realtime/SH600000`（沪市）。
 
 ## 安全
 
-### v1.0.3 安全加固
-
-- **路径穿越防护**：`offline/daily`、`offline/min`、`offline/gbbq`、`offline/blocks` 全面移除可绕过校验的自由参数（`path`/`vipdoc`），改为白名单校验 + `filepath.Join` 前缀限制
-- **SSRF 防护**：`server/test` 和 `fetch-urls` 改用预设白名单 host，拒绝非白名单目标，阻止内网探测和云元数据访问
-- **目录枚举防护**：`offline/blocks` 限定 4 个合法文件名（`block_zs.dat`/`block_gn.dat`/`block_fz.dat`/`block_fy.dat`）
+- **路径穿越防护**：`offline/daily`、`offline/min`、`offline/gbbq`、`offline/blocks`、`offline/ex-daily` 全面移除可绕过校验的自由参数（`path`/`vipdoc`），改为白名单校验 + `filepath.Join` 前缀限制；`offline/gbbq` 强制 `code` 6 位数字；`offline/blocks` 限定 4 个合法文件名（`block_zs.dat`/`block_gn.dat`/`block_fz.dat`/`block_fy.dat`）。
+- **SSRF 防护**：`server/test` 和 `fetch-urls` 改用预设白名单 host，拒绝非白名单目标，阻止内网探测和云元数据访问。
 
 ## 数据源
 
-| 数据源 | 用途 | 状态 |
-|--------|------|------|
-| **TDX TCP** | 通达信行情服务器（实时行情、K 线、财务、缠论数据） | 可用 |
-| **TDX HTTP (TQLEX)** | 通达信 HTTP 网关（tdxhub.icfqs.com:7615，行情、K 线、基础数据） | 可用 |
-| **东方财富 (push2delay)** | 实时行情、板块、资金流（延迟数据） | 可用 |
-| **东方财富 (datacenter)** | 财务数据、宏观数据、公告 | 可用 |
-| **新浪财经** | 行情数据补充 | 可用 |
-| **腾讯证券** | 融资融券数据 | 可用 |
-| **本地 TDX 数据** | vipdoc 目录下的日线/分钟线/板块文件 | 可选 |
-| **Binance API** | 加密货币行情 | 可用 |
-| **CoinGecko API** | 加密货币数据备用源 | 可用 |
+| 数据源 | 用途 | 是否需 Token |
+|--------|------|--------------|
+| **TDX TCP** | 通达信行情服务器（实时行情、K 线、财务、缠论数据），自动选择最快主机 | 否 |
+| **TDX HTTP (TQLEX)** | 通达信 HTTP 网关（tdxhub.icfqs.com:7615，行情、K 线、基础数据） | 是 |
+| **东方财富 (push2delay)** | 实时行情、板块、资金流（延迟数据） | 否 |
+| **东方财富 (datacenter)** | 财务、宏观、龙虎榜、北向、涨跌停、大宗交易 | 否 |
+| **新浪财经** | A 股/港股/美股行情、融资融券、大宗交易 | 否 |
+| **腾讯证券** | 融资融券、期货行情 | 否 |
+| **Binance API** | 加密货币行情与 K 线 | 否 |
+| **CoinGecko API** | 加密货币数据备用源 | 否 |
+| **巨潮资讯网** | 公司公告 | 否 |
+| **天天基金网** | 基金净值/持仓 | 否 |
+| **同花顺问财 (iwencai)** | 自然语言选股/板块/资讯 | 否 |
+| **本地 TDX 数据** | vipdoc 目录下的日线/分钟线/板块文件 | 否 |
 
-> 注意：`push2his.eastmoney.com` 已被完全阻断，不可用。所有历史 K 线数据通过 TDX 数据源获取。
+> 注意：`push2his.eastmoney.com` 已被阻断不可用，历史 K 线通过 TDX 数据源获取。
 
 ## 技术栈
 
 - **语言**：Go 1.26+
 - **MCP 协议**：mark3labs/mcp-go
-- **HTTP/WebSocket**：gorilla/mux + gorilla/websocket
+- **HTTP/WebSocket**：gorilla/websocket + 标准库 net/http
 - **TDX 协议**：通达信二进制协议（TCP 直连）+ HTTP TQLEX 网关
 - **爬虫**：net/http、goquery
-- **计算引擎**：自研因子计算、缠论分析、量化回测引擎
+- **计算引擎**：自研因子计算、缠论分析、量化回测、投资组合优化引擎
+- **存储**：SQLite（策略持久化）
 
 ## 项目结构
 
 ```
-go-TDX-MCP/
-├── main.go               # 入口：MCP/Web 双模式
-├── config.json           # 配置文件
+go-tdx-mcp/
+├── main.go               # 入口：MCP/Web/SSE/Streamable 多模式
+├── config.example.json   # 配置示例
+├── test_all_api.py       # 功能测试脚本
 ├── web/
-│   ├── server.go         # Web API + WebSocket 服务器
-│   ├── handlers_new.go   # 新增端点处理器
+│   ├── server.go         # Web API + WebSocket 服务器（约 100 路由）
+│   ├── handlers_new.go   # 扩展端点处理器
+│   ├── handlers_missing.go
+│   ├── strategy_store.go # 策略 SQLite 存储
 │   └── server_test.go    # 回归测试
 ├── tdx/
 │   ├── client.go         # HTTP TQLEX 客户端
-│   ├── tcp_client.go     # TDX TCP 客户端（含 K 线获取/自动重连）
+│   ├── tcp_client.go     # TDX TCP 客户端（K 线获取/自动重连）
 │   ├── unified_client.go # 统一客户端（TCP + HTTP 智能路由）
 │   ├── unified_bridge.go # 桥接层（TCP ↔ HTTP 格式转换）
 │   ├── collector.go      # 多主机数据采集器
-│   ├── tools.go          # 核心工具集（17 个）
-│   ├── tools_expanded.go # 扩展工具集（132 个）
-│   ├── tools_v3.go       # V3 工具集（18 个）
-│   ├── tools_new.go      # 新增工具集（276 个）
-│   └── strategies.go     # 量化策略定义
-├── indicator/            # 技术指标计算引擎（34 个指标）
+│   ├── tools.go          # 核心工具集（6 个）
+│   ├── tools_expanded.go # 扩展工具集（64 个）
+│   ├── tools_v3.go       # V3 工具集（8 个）
+│   ├── tools_new.go      # 新增工具集（137 个）
+│   ├── strategies.go     # 量化策略定义
+│   └── types.go          # 请求/响应类型定义
+├── indicator/            # 技术指标计算引擎（30+ 指标）
 ├── factor/               # 因子计算引擎
 ├── backtest/             # 量化回测引擎
 ├── chanlun/              # 缠论分析引擎（分型/笔/中枢/买卖点）
 ├── finance/              # 财务报表解析
 ├── offline/              # 离线数据读写（TDX vipdoc）
-├── scraper/              # 网页数据爬虫（东方财富/新浪/腾讯）
-├── portfolio/            # 投资组合优化
+├── scraper/              # 网页数据爬虫（东方财富/新浪/腾讯/同花顺）
+├── portfolio/            # 投资组合优化与风险
 ├── screen/               # 选股扫描引擎
-└── vipdoc/               # 本地 TDX 数据目录（可选）
+├── vipdoc/               # 本地 TDX 数据目录（可选，运行时生成）
+└── cmd/stress_test/      # 压力测试工具
 ```
 
 ## 测试
@@ -325,45 +336,49 @@ go test ./...
 go vet ./...
 ```
 
-功能测试：
+功能测试（混合模式启动后）：
+
 ```bash
 python3 test_all_api.py
 ```
 
-测试覆盖率：70/72 通过（2 个离线端点依赖本地 TDX 安装，无安装时返回 404）。
+单元测试覆盖 tdx/indicator/factor/backtest/chanlun/finance/scraper/web 等包，共 167 个测试函数。
 
 ## Changelog
 
+### v1.0.4（2026-08-23）
+- 文档修正：README 工具数量更正为实际值（215 个，原误标 443）；分类表更新为 Core 6 / Expanded 64 / V3 8 / New 137
+- 文档修正：REST API 端点表与项目结构对齐 `web/server.go` 实际路由
+- 版本同步：main.go 版本号从 1.0.0 更新至 1.0.4
+- 数据源表补充：新增同花顺问财、巨潮、天天基金等免费源并标注是否需 Token
+
 ### v1.0.3（2026-08-23）
-- 安全加固：`offline/gbbq` 移除 `path` 参数，强制 `code` 6 位数字 + `filepath.Join` 前缀校验，消除任意文件读风险
-- 安全加固：`server/test` 改用白名单模式，拒绝非白名单 host，消除 SSRF 漏洞
-- 安全加固：`offline/blocks` 移除 `path` 参数，限定 4 个合法文件名白名单，消除目录枚举风险
-- 安全加固：`offline/daily`/`offline/min`/`offline/ex-daily` 移除 `vipdoc` 参数，增加 `market`/`code`/`minType` 白名单校验，消除路径穿越风险
+- 安全加固：`offline/gbbq` 移除 `path` 参数，强制 `code` 6 位数字 + `filepath.Join` 前缀校验
+- 安全加固：`server/test` 改用白名单模式，消除 SSRF 漏洞
+- 安全加固：`offline/blocks` 限定 4 个合法文件名白名单
+- 安全加固：`offline/daily`/`offline/min`/`offline/ex-daily` 移除 `vipdoc` 参数，增加白名单校验
 - 修复：`fund-flow` 500 错误（MAC 服务器 broken pipe）→ `reconnectMAC` 先 `Disconnect()` 再重连
-- 修复：`reconnectMain`/`reconnectEx` 重连不彻底 → 先 `Disconnect()` 再重连，确保 gotdx `conn` 置 nil
+- 修复：`reconnectMain`/`reconnectEx` 重连不彻底 → 先 `Disconnect()` 再重连
 - 修复：`ensureMACConnected` 缺少互斥锁保护 → 新增 `macMu` 锁
 - `fetchKlines` 增加 TCP 原生 K 线获取回退（三级数据源：TCP → 离线 → HTTP）
 
 ### v1.0.2（2026-08-04）
 - 修复 K 线 HTTP ListItem 解析字段映射错位：Close/High/Low 与 Vol/Amount 索引颠倒
-- 修复 web 层 K 线周期编码：`klinePeriodToCode` 与 `tdx.PeriodToCode` 不一致导致 day/week/month 返回错误周期
-- 修复 `fetchKlines` 无法解析 TQLEX ListItem 响应，始终 fallback 到被阻断的 eastmoney 的问题
-- 修复 `tdx/tools_expanded.go` / `tdx/unified_bridge.go` 中 5 处 `len(fields)<6` 却访问 `fields[8]` 的越界 panic 风险
-- 修复 M2 宏观数据字段名错误：API 实际字段为 `BASIC_CURRENCY`（非 `M2`），`CURRENCY`（非 `M1`）
+- 修复 web 层 K 线周期编码与 `tdx.PeriodToCode` 不一致
+- 修复 `fetchKlines` 无法解析 TQLEX ListItem 响应
+- 修复 `tools_expanded.go`/`unified_bridge.go` 中 5 处 `len(fields)<6` 访问 `fields[8]` 越界 panic
+- 修复 M2 宏观数据字段名：实际为 `BASIC_CURRENCY`（非 `M2`）
 - 新增 `web/server_test.go`、`tdx/listitem_parse_test.go` 回归测试
-- 全部数据采集接口实测验证通过（行情/K 线/财务/板块/缠论/指标/回测/资金流/港股/基金/宏观/公告/加密/北向/WebSocket）
 
 ### v1.0.1（2026-08-02）
 - 统一 K 线数据解析路径：TCP SecurityBar ↔ HTTP ListHead/ListItem 双格式自动适配
-- 修复 `tdx_kline_data` 的 HTTP fallback 使用不存在的 `TdxShare.PBQuotes` entry
+- 修复 `tdx_kline_data` HTTP fallback 使用不存在的 `TdxShare.PBQuotes` entry
 - 修复 `KlineQuery` 在 TCP 不可用时跳过 HTTP fallback 的逻辑缺陷
-- 新增 WebSocket 实时行情推送（`/ws/realtime/{symbol}`，3 秒轮询）
-- 修复 `parseKlineBars` / `parseKlineBarsToDayBars` / `parseChanlunKlines` 缺 HTTP 格式支持
-- 修复 `parseBarsFromResponse` 缺 HTTP ListHead/ListItem 格式支持
-- 旧版 `HandleKline`（tools.go）补 TCP 格式处理
+- 新增 WebSocket 实时行情推送
+- 修复多个 K 线解析函数缺 HTTP 格式支持
 
 ### v1.0.0
-- 初始版本：215+ 个 MCP 工具 + 45+ 个投资技能
+- 初始版本：215 个 MCP 工具 + 45+ 个投资技能
 - 支持 Stdio / SSE / Streamable HTTP / Web 混合模式
 - 覆盖 A 股、港股、美股、加密货币、期货、基金全市场数据
 
