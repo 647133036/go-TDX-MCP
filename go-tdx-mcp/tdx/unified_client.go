@@ -96,6 +96,11 @@ func NewUnifiedClient(token string, timeoutSec int, tdxHost string, tdxPort int,
 	return uc
 }
 
+// TCPClient returns the underlying TCP client for direct protocol access.
+func (uc *UnifiedClient) TCPClient() *TDXTCPClient {
+	return uc.tcpClient
+}
+
 // UnifiedClientOption configures a UnifiedClient.
 type UnifiedClientOption func(*UnifiedClient)
 

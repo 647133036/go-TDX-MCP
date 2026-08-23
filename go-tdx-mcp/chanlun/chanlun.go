@@ -86,6 +86,116 @@ type ChanLunResult struct {
 	BeiChiList     []BeiChi
 }
 
+// ChanLunConfig 缠论分析配置
+type ChanLunConfig struct {
+	BiType  string // "new"(默认) / "old"(老笔) / "simple"(简单笔)
+	ZS_Type string // "standard"(默认) / "strict"(严格中枢)
+	FxStrict bool   // 严格分型模式(排除等高/等低分型)
+}
+
+// DefaultChanLunConfig 返回默认配置
+func DefaultChanLunConfig() *ChanLunConfig {
+	return &ChanLunConfig{
+		BiType:   "new",
+		ZS_Type:  "standard",
+		FxStrict: false,
+	}
+}
+
+// MultiLevelResult 多级别分析查询结果
+type MultiLevelResult struct {
+	HiLevel   string
+	LoLevel   string
+	BiCount   int
+	ZS_Count  int
+	HasTrend  bool
+	HasConsol bool
+}
+
+// MultiLevelAnalyser 多级别联立分析器
+type MultiLevelAnalyser struct {
+	Levels map[string]*ChanLunResult
+	Config *ChanLunConfig
+}
+
+// NewMultiLevelAnalyser 创建多级别分析器
+func NewMultiLevelAnalyser(config *ChanLunConfig) *MultiLevelAnalyser {
+	if config == nil {
+		config = DefaultChanLunConfig()
+	}
+	return &MultiLevelAnalyser{
+		Levels: make(map[string]*ChanLunResult),
+		Config: config,
+	}
+}
+
+// Process 处理指定级别的K线数据
+func (m *MultiLevelAnalyser) Process(level string, klines []Kline) *ChanLunResult {
+	if m.Config == nil {
+		m.Config = DefaultChanLunConfig()
+	}
+	result := AnalyzeWithConfig(klines, m.Config)
+	m.Levels[level] = result
+	return result
+}
+
+// GetResult 获取指定级别的分析结果
+func (m *MultiLevelAnalyser) GetResult(level string) *ChanLunResult {
+	return m.Levels[level]
+}
+
+// QueryLowLevelQS 查询高级别笔在低级别中的走势结构
+func (m *MultiLevelAnalyser) QueryLowLevelQS(hiLevel string, loLevel string, biIdx int) *MultiLevelResult {
+	hiRes, ok := m.Levels[hiLevel]
+	if !ok || hiRes == nil {
+		return &MultiLevelResult{HiLevel: hiLevel, LoLevel: loLevel}
+	}
+	if biIdx < 0 || biIdx >= len(hiRes.BiList) {
+		return &MultiLevelResult{HiLevel: hiLevel, LoLevel: loLevel}
+	}
+
+	loRes, ok := m.Levels[loLevel]
+	if !ok || loRes == nil {
+		return &MultiLevelResult{HiLevel: hiLevel, LoLevel: loLevel}
+	}
+
+	hiBi := hiRes.BiList[biIdx]
+	if hiBi.StartDate == "" || hiBi.EndDate == "" {
+		return &MultiLevelResult{HiLevel: hiLevel, LoLevel: loLevel}
+	}
+
+	// 统计低级别在高级别笔时间范围内的笔和中枢
+	biCount := 0
+	zsCount := 0
+	start := hiBi.StartDate
+	end := hiBi.EndDate
+
+	for _, b := range loRes.BiList {
+		if b.StartDate >= start && b.EndDate <= end {
+			biCount++
+		}
+	}
+	for _, zs := range loRes.ZhongShuList {
+		if zs.StartDate >= start && zs.EndDate <= end {
+			zsCount++
+		}
+	}
+
+	// 趋势判断: 低级别笔数>=5且中枢数量>=1则为趋势
+	// 盘整判断: 低级别笔数>=3但中枢数量<=1
+	hasTrend := biCount >= 5 && zsCount >= 1
+	hasConsol := biCount >= 3 && zsCount <= 1 && !hasTrend
+
+	return &MultiLevelResult{
+		HiLevel:   hiLevel,
+		LoLevel:   loLevel,
+		BiCount:   biCount,
+		ZS_Count:  zsCount,
+		HasTrend:  hasTrend,
+		HasConsol: hasConsol,
+	}
+}
+
 // ---- 通用辅助函数 ----
 
 func maxFloat(a, b float64) float64 {
@@ -441,6 +551,218 @@ func BuildZhongShu(biList []Bi, mergedKlines []Kline) []ZhongShu {
 }
 
 // ---- 5. 线段 ----
+
+// ---- Config-aware 辅助函数 ----
+
+// FilterFenXingStrict 严格分型过滤: 排除相邻K线等高/等低的分型
+func FilterFenXingStrict(fx []FenXing) []FenXing {
+	if len(fx) == 0 {
+		return fx
+	}
+	result := make([]FenXing, 0, len(fx))
+	for i, f := range fx {
+		if f.Type == "top" {
+			if i > 0 && fx[i-1].High == f.High {
+				continue
+			}
+			if i+1 < len(fx) && fx[i+1].High == f.High {
+				continue
+			}
+		} else if f.Type == "bottom" {
+			if i > 0 && fx[i-1].Low == f.Low {
+				continue
+			}
+			if i+1 < len(fx) && fx[i+1].Low == f.Low {
+				continue
+			}
+		}
+		result = append(result, f)
+	}
+	return FilterFenXing(result)
+}
+
+// BuildBiWithConfig 按配置构建笔
+// biType: "new"(默认, 间隔>=4) / "old"(老笔, 间隔>=5) / "simple"(简单笔, 间隔>=2)
+func BuildBiWithConfig(fenxings []FenXing, mergedKlines []Kline, biType string) []Bi {
+	if len(fenxings) < 2 {
+		return nil
+	}
+
+	cleanFx := FilterFenXing(fenxings)
+	if len(cleanFx) < 2 {
+		return nil
+	}
+
+	// 根据 biType 选择最小间隔
+	minGap := 4
+	switch biType {
+	case "old":
+		minGap = 5
+	case "simple":
+		minGap = 2
+	case "new":
+		minGap = 4
+	}
+
+	var biList []Bi
+	idx := 0
+
+	for i := 0; i < len(cleanFx)-1; {
+		fx1 := cleanFx[i]
+		found := false
+		for j := i + 1; j < len(cleanFx); j++ {
+			fx2 := cleanFx[j]
+			if fx1.Type != fx2.Type && fx2.Index-fx1.Index >= minGap {
+				direction := "up"
+				if fx1.Type == "top" {
+					direction = "down"
+				}
+
+				high := fx1.High
+				if fx2.High > high {
+					high = fx2.High
+				}
+				low := fx1.Low
+				if fx2.Low < low {
+					low = fx2.Low
+				}
+
+				biList = append(biList, Bi{
+					Index:     idx,
+					Direction: direction,
+					StartDate: fx1.Date,
+					EndDate:   fx2.Date,
+					StartIdx:  fx1.Index,
+					EndIdx:    fx2.Index,
+					High:      high,
+					Low:       low,
+				})
+				idx++
+				i = j
+				found = true
+				break
+			}
+		}
+		if !found {
+			break
+		}
+	}
+
+	for i := 0; i < len(biList)-1; i++ {
+		if biList[i].Direction != biList[i+1].Direction {
+			biList[i].Confirmed = true
+		}
+	}
+
+	return biList
+}
+
+// BuildZhongShuWithConfig 按配置构建中枢
+// zsType: "standard"(默认, 3笔重叠) / "strict"(严格, 5笔重叠)
+func BuildZhongShuWithConfig(biList []Bi, mergedKlines []Kline, zsType string) []ZhongShu {
+	if len(biList) < 3 {
+		return nil
+	}
+
+	minPen := 3
+	if zsType == "strict" {
+		minPen = 5
+		if len(biList) < 5 {
+			return nil
+		}
+	}
+
+	var zsList []ZhongShu
+	idx := 0
+
+	for i := 0; i <= len(biList)-minPen; {
+		overlapLow := math.MaxFloat64
+		overlapHigh := -math.MaxFloat64
+		gg := -math.MaxFloat64
+		dd := math.MaxFloat64
+
+		lows := make([]float64, minPen)
+		highs := make([]float64, minPen)
+		for k := 0; k < minPen; k++ {
+			bi := biList[i+k]
+			lows[k] = bi.Low
+			highs[k] = bi.High
+			if bi.High > gg {
+				gg = bi.High
+			}
+			if bi.Low < dd {
+				dd = bi.Low
+			}
+		}
+
+		overlapLow = lows[0]
+		overlapHigh = highs[0]
+		for k := 1; k < minPen; k++ {
+			if lows[k] > overlapLow {
+				overlapLow = lows[k]
+			}
+			if highs[k] < overlapHigh {
+				overlapHigh = highs[k]
+			}
+		}
+
+		if overlapLow >= overlapHigh {
+			i++
+			continue
+		}
+
+		lineCount := minPen
+		endJ := i + minPen - 1
+
+		for j := i + minPen; j < len(biList); j++ {
+			bi := biList[j]
+			if bi.Low < overlapHigh && bi.High > overlapLow {
+				lineCount++
+				endJ = j
+				if bi.Low > overlapLow {
+					overlapLow = bi.Low
+				}
+				if bi.High < overlapHigh {
+					overlapHigh = bi.High
+				}
+				if bi.High > gg {
+					gg = bi.High
+				}
+				if bi.Low < dd {
+					dd = bi.Low
+				}
+			} else {
+				break
+			}
+		}
+
+		confirmed := false
+		if endJ < len(biList)-1 {
+			nextBi := biList[endJ+1]
+			if nextBi.High < overlapLow || nextBi.Low > overlapHigh {
+				confirmed = true
+			}
+		}
+
+		zs := ZhongShu{
+			Index:     idx,
+			StartDate: biList[i].StartDate,
+			EndDate:   biList[endJ].EndDate,
+			ZG:        overlapHigh,
+			ZD:        overlapLow,
+			GG:        gg,
+			DD:        dd,
+			LineCount: lineCount,
+			Direction: biList[i].Direction,
+			Confirmed: confirmed,
+		}
+		zsList = append(zsList, zs)
+		idx++
+		i = endJ + 1
+	}
+
+	return zsList
+}
 
 func BuildXianDuan(biList []Bi, mergedKlines []Kline) []XianDuan {
 	if len(biList) == 0 {
@@ -800,6 +1122,21 @@ func FindBeiChi(biList []Bi, zhongShuList []ZhongShu, mergedKlines []Kline) []Be
 // ---- 8. 主分析函数 ----
 
 func Analyze(klines []Kline) *ChanLunResult {
+	return AnalyzeWithConfig(klines, DefaultChanLunConfig())
+}
+
+// AnalyzeWithConfig 带配置的缠论分析
+func AnalyzeWithConfig(klines []Kline, config *ChanLunConfig) *ChanLunResult {
+	if config == nil {
+		config = DefaultChanLunConfig()
+	}
+	if config.BiType == "" {
+		config.BiType = "new"
+	}
+	if config.ZS_Type == "" {
+		config.ZS_Type = "standard"
+	}
+
 	result := &ChanLunResult{
 		OrigCount: len(klines),
 	}
@@ -808,31 +1145,27 @@ func Analyze(klines []Kline) *ChanLunResult {
 		return result
 	}
 
-	// 步骤1: K线合并
 	merged := MergeKlines(klines)
 	result.MergedCount = len(merged)
 
-	// 步骤2: 分型识别
 	fenxings := FindFenXing(merged)
+	if config.FxStrict {
+		fenxings = FilterFenXingStrict(fenxings)
+	}
 	result.FenXingCount = len(fenxings)
 
-	// 步骤3: 笔
-	biList := BuildBi(fenxings, merged)
+	biList := BuildBiWithConfig(fenxings, merged, config.BiType)
 	result.BiList = biList
 
-	// 步骤4: 中枢
-	zhongShuList := BuildZhongShu(biList, merged)
+	zhongShuList := BuildZhongShuWithConfig(biList, merged, config.ZS_Type)
 	result.ZhongShuList = zhongShuList
 
-	// 步骤5: 线段
 	xianDuanList := BuildXianDuan(biList, merged)
 	result.XianDuanList = xianDuanList
 
-	// 步骤6: 买卖点
 	maiMaiDianList := FindMaiMaiDian(biList, zhongShuList, merged)
 	result.MaiMaiDianList = maiMaiDianList
 
-	// 步骤7: 背驰
 	beiChiList := FindBeiChi(biList, zhongShuList, merged)
 	result.BeiChiList = beiChiList
 

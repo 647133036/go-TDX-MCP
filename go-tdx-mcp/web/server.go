@@ -172,6 +172,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/backtest/multi-strategy", s.handleBacktestMultiStrategy)
 	s.mux.HandleFunc("/api/v1/backtest/strategies", s.handleBacktestStrategies)
 	s.mux.HandleFunc("/api/v1/backtest/signal-scan", s.handleSignalScan)
+	s.mux.HandleFunc("/api/v1/backtest/signal-rank", s.handleSignalRank)
+	s.mux.HandleFunc("/api/v1/backtest/run-all", s.handleBacktestRunAll)
+	s.mux.HandleFunc("/api/v1/chanlun/multi", s.handleChanlunMulti)
 	s.mux.HandleFunc("/api/v1/strategies", s.handleStrategyStore)
 	s.mux.HandleFunc("/api/v1/strategies/", s.handleStrategyStoreByID)
 	s.mux.HandleFunc("/api/v1/minute", s.handleMinute)
@@ -190,10 +193,22 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/company/content", s.handleCompanyContent)
 	s.mux.HandleFunc("/api/v1/ex/minute", s.handleExMinute)
 	s.mux.HandleFunc("/api/v1/ex/transaction", s.handleExTransaction)
+	s.mux.HandleFunc("/api/v1/ex/list", s.handleExList)
+	s.mux.HandleFunc("/api/v1/ex/quotes", s.handleExQuotes)
+	s.mux.HandleFunc("/api/v1/ex/transaction-all", s.handleExTransactionAll)
+	s.mux.HandleFunc("/api/v1/ex/chart-sampling", s.handleExChartSampling)
 	s.mux.HandleFunc("/api/v1/finance", s.handleFinance)
 	s.mux.HandleFunc("/api/v1/financial/file-list", s.handleFinancialFileList)
 	s.mux.HandleFunc("/api/v1/financial/records", s.handleFinancialRecords)
 	s.mux.HandleFunc("/api/v1/fund-flow/history", s.handleFundFlowHistory)
+	s.mux.HandleFunc("/api/v1/fund-flow", s.handleFundFlow)
+	s.mux.HandleFunc("/api/v1/volume-profile", s.handleVolumeProfile)
+	s.mux.HandleFunc("/api/v1/index/info", s.handleIndexInfo)
+	s.mux.HandleFunc("/api/v1/index/momentum", s.handleIndexMomentum)
+	s.mux.HandleFunc("/api/v1/history-orders", s.handleHistoryOrders)
+	s.mux.HandleFunc("/api/v1/ex/quotes-list", s.handleExQuotesList)
+	s.mux.HandleFunc("/api/v1/xdxr", s.handleXDXR)
+	s.mux.HandleFunc("/api/v1/minute/multi", s.handleMinuteMulti)
 	s.mux.HandleFunc("/api/v1/market/strength", s.handleMarketStrength)
 	s.mux.HandleFunc("/api/v1/factor/list", s.handleFactorList)
 	s.mux.HandleFunc("/api/v1/factor/compute", s.handleFactorCompute)
@@ -276,6 +291,41 @@ func normalizeCode(rawCode string) string {
 	return c
 }
 
+func isValidStockCode(code string) bool {
+	if len(code) != 6 {
+		return false
+	}
+	for _, ch := range code {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+var validBlockFiles = map[string]bool{
+	"block_gn.dat": true,
+	"block_zs.dat": true,
+	"block_fg.dat": true,
+	"block_fl.dat": true,
+}
+
+func isValidBlockFile(fileName string) bool {
+	return validBlockFiles[fileName]
+}
+
+func isValidExCode(code string) bool {
+	if code == "" {
+		return false
+	}
+	for _, ch := range code {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		writeError(w, 404, "page not found")
@@ -311,7 +361,11 @@ a{color:#1a73e8}
 <table>
 <tr><td><a href="/api/v1/indicator/compute_all?code=000001&market=0&indicators=MACD,KDJ">/api/v1/indicator/compute_all</a></td><td>GET</td><td>技术指标计算(34种)</td></tr>
 <tr><td><a href="/api/v1/chanlun/analyze?code=000001&market=0">/api/v1/chanlun/analyze</a></td><td>GET</td><td>缠论分析</td></tr>
+<tr><td>/api/v1/chanlun/multi</td><td>POST</td><td>缠论多级别联立分析</td></tr>
 <tr><td><a href="/api/v1/backtest/run?code=000001&market=0&strategy=MA_CROSS">/api/v1/backtest/run</a></td><td>GET</td><td>策略回测(7种)</td></tr>
+<tr><td>/api/v1/backtest/signal-scan</td><td>POST</td><td>策略选股扫描(全市场信号)</td></tr>
+<tr><td>/api/v1/backtest/signal-rank</td><td>POST</td><td>信号股票回测排名</td></tr>
+<tr><td><a href="/api/v1/backtest/run-all?code=000001&market=0&count=1000">/api/v1/backtest/run-all</a></td><td>GET</td><td>全策略批量回测排名</td></tr>
 <tr><td><a href="/api/v1/news-sentiment?code=000001">/api/v1/news-sentiment</a></td><td>GET</td><td>新闻情感分析</td></tr>
 </table>
 <h2>板块与资金</h2>
@@ -393,6 +447,9 @@ func (s *Server) handleQuotes(w http.ResponseWriter, r *http.Request) {
 	} else {
 		codesParam := r.URL.Query().Get("codes")
 		if codesParam == "" {
+			codesParam = r.URL.Query().Get("code")
+		}
+		if codesParam == "" {
 			writeError(w, 400, "codes 参数必填")
 			return
 		}
@@ -447,7 +504,7 @@ func (s *Server) handleQuotes(w http.ResponseWriter, r *http.Request) {
 		respHTTP.Body.Close()
 		results = append(results, data)
 	}
-	writeJSON(w, results)
+	writeJSON(w, map[string]interface{}{"data": results, "count": len(results)})
 }
 
 func (s *Server) handleBars(w http.ResponseWriter, r *http.Request) {
@@ -467,11 +524,20 @@ func (s *Server) handleBars(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, fmt.Sprintf("获取K线失败: %v", err))
 		return
 	}
-	writeJSON(w, bars)
+	writeJSON(w, map[string]interface{}{"data": bars, "total": len(bars)})
 }
 
 func klinePeriodToCode(period string) int {
 	return tdx.PeriodToCode(period)
+}
+
+func normalizePeriod(period string) string {
+	switch period {
+	case "5", "10", "15", "30", "60", "120":
+		return period + "m"
+	default:
+		return period
+	}
 }
 
 func (s *Server) fetchKlinesFromOffline(code string, market int, period string, count int) ([]indicator.Bar, error) {
@@ -539,14 +605,42 @@ func (s *Server) handleIndicatorList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleIndicatorCompute(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		code := r.URL.Query().Get("code")
+		market, ok := parseMarket(r)
+		period := queryParam(r, "period", "day")
+		count := queryInt(r, "count", 100)
+		indName := r.URL.Query().Get("indicator")
+		if code == "" || !ok || indName == "" {
+			writeError(w, 400, "code, market, indicator 参数必填")
+			return
+		}
+		code = normalizeCode(code)
+		bars, err := s.fetchKlines(code, market, period, count, 0)
+		if err != nil {
+			writeError(w, 500, fmt.Sprintf("获取K线失败: %v", err))
+			return
+		}
+		result, err := indicator.ComputeAll(bars, []string{indName}, nil)
+		if err != nil {
+			writeError(w, 500, fmt.Sprintf("计算失败: %v", err))
+			return
+		}
+		writeJSON(w, result)
+		return
+	}
 	var req struct {
 		Data       []indicator.Bar         `json:"data"`
 		Indicators []string                `json:"indicators"`
+		Indicator  string                  `json:"indicator"`
 		Params     map[string]float64      `json:"params,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "无效的请求体: "+err.Error())
 		return
+	}
+	if req.Indicator != "" {
+		req.Indicators = []string{req.Indicator}
 	}
 	if len(req.Data) == 0 {
 		writeError(w, 400, "data 不能为空")
@@ -590,6 +684,7 @@ func (s *Server) handleIndicatorComputeAll(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) fetchKlines(code string, market int, period string, count, fqType int) ([]indicator.Bar, error) {
+	period = normalizePeriod(period)
 	if s.client != nil {
 		periodCode := klinePeriodToCode(period)
 		body := map[string]interface{}{
@@ -606,6 +701,13 @@ func (s *Server) fetchKlines(code string, market int, period string, count, fqTy
 				}
 				return bars, nil
 			}
+		}
+	}
+
+	tcp := s.getTCPClient()
+	if tcp != nil {
+		if bars, err := fetchBarsFromTCP(tcp, code, market, period, count); err == nil && len(bars) > 0 {
+			return bars, nil
 		}
 	}
 
@@ -639,6 +741,46 @@ func (s *Server) fetchKlines(code string, market int, period string, count, fqTy
 	return parseKlineBars(rawData)
 }
 
+func fetchBarsFromTCP(tcp *tdx.TDXTCPClient, code string, market int, period string, count int) ([]indicator.Bar, error) {
+	periodMap := map[string]int{"day": 0, "1": 0, "week": 1, "5": 1, "month": 2, "10": 2,
+		"5m": 3, "60": 3, "15m": 4, "15": 4, "30m": 5, "30": 5, "60m": 6}
+	tcpPeriod, ok := periodMap[period]
+	if !ok {
+		tcpPeriod = 0
+	}
+	if tcpPeriod >= 3 && count < 100 {
+		tcpPeriod = 0
+	}
+	reply, err := tcp.GetSecurityBars(code, market, tcpPeriod, count)
+	if err != nil || reply == nil || len(reply.List) == 0 {
+		return nil, err
+	}
+	bars := make([]indicator.Bar, 0, len(reply.List))
+	for i := len(reply.List) - 1; i >= 0; i-- {
+		b := reply.List[i]
+		dt := b.DateTime.Format("2006-01-02")
+		if tcpPeriod >= 3 {
+			dt = b.DateTime.Format("2006-01-02 15:00")
+		}
+		bars = append(bars, indicator.Bar{
+			Date:   dt,
+			Open:   b.Open,
+			High:   b.High,
+			Low:    b.Low,
+			Close:  b.Close,
+			Vol:    b.Vol,
+			Amount: b.Amount,
+		})
+		if len(bars) >= count {
+			break
+		}
+	}
+	if len(bars) < 2 {
+		return nil, fmt.Errorf("TCP返回数据不足")
+	}
+	return bars, nil
+}
+
 func (s *Server) handleChanlun(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	market, ok := parseMarket(r)
@@ -650,6 +792,17 @@ func (s *Server) handleChanlun(w http.ResponseWriter, r *http.Request) {
 	fqType := queryInt(r, "fq_type", 0)
 	count := queryInt(r, "count", 200)
 	period := queryParam(r, "period", "day")
+
+	config := chanlun.DefaultChanLunConfig()
+	if bt := r.URL.Query().Get("bi_type"); bt != "" {
+		config.BiType = bt
+	}
+	if zt := r.URL.Query().Get("zs_type"); zt != "" {
+		config.ZS_Type = zt
+	}
+	if _, strict := r.URL.Query()["fx_strict"]; strict {
+		config.FxStrict = true
+	}
 
 	bars, err := s.fetchKlines(code, market, period, count, fqType)
 	if err != nil {
@@ -668,7 +821,7 @@ func (s *Server) handleChanlun(w http.ResponseWriter, r *http.Request) {
 			Amount: b.Amount,
 		})
 	}
-	result := chanlun.Analyze(klines)
+	result := chanlun.AnalyzeWithConfig(klines, config)
 	result.Symbol = code
 	result.Period = period
 	writeJSON(w, result)
@@ -700,10 +853,47 @@ func normalizeKlineDate(s string) string {
 }
 
 func (s *Server) handleBacktest(w http.ResponseWriter, r *http.Request) {
-	code := r.URL.Query().Get("code")
-	market, ok := parseMarket(r)
-	strategy := r.URL.Query().Get("strategy")
-	if code == "" || !ok || strategy == "" {
+	var code string
+	var market int
+	var marketOK bool
+	var strategy string
+	var count int
+	var period string
+	var cash float64
+
+	if r.Method == "POST" {
+		var req struct {
+			Code     string            `json:"code"`
+			Market   int               `json:"market"`
+			Strategy string            `json:"strategy"`
+			Period   string            `json:"period,omitempty"`
+			Count    int               `json:"count,omitempty"`
+			Cash     float64           `json:"cash,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, 400, "无效的请求体: "+err.Error())
+			return
+		}
+		code = req.Code
+		market = req.Market
+		marketOK = true
+		strategy = req.Strategy
+		period = req.Period
+		count = req.Count
+		cash = req.Cash
+	} else {
+		code = r.URL.Query().Get("code")
+		market, marketOK = parseMarket(r)
+		strategy = r.URL.Query().Get("strategy")
+		if code == "" || !marketOK || strategy == "" {
+			writeError(w, 400, "code, market, strategy 参数必填")
+			return
+		}
+		count = queryInt(r, "count", 2000)
+		period = queryParam(r, "period", "day")
+		cash = queryFloat(r, "cash", 1000000)
+	}
+	if code == "" || !marketOK || strategy == "" {
 		writeError(w, 400, "code, market, strategy 参数必填")
 		return
 	}
@@ -713,22 +903,40 @@ func (s *Server) handleBacktest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "不支持的策略: "+strategy+" (可用策略: "+strings.Join(backtest.AvailableStrategies(), ", ")+")")
 		return
 	}
-	fqType := queryInt(r, "fq_type", 0)
-	count := queryInt(r, "count", 2000)
-	period := queryParam(r, "period", "day")
+	if period == "" {
+		period = "day"
+	}
+	if count == 0 {
+		count = 2000
+	}
+	if cash == 0 {
+		cash = 1000000
+	}
 
-	bars, err := s.fetchKlines(code, market, period, count, fqType)
+	bars, err := s.fetchKlines(code, market, period, count, 0)
 	if err != nil {
 		writeError(w, 500, fmt.Sprintf("获取K线失败: %v", err))
 		return
 	}
-	cash := queryFloat(r, "cash", 1000000)
 	engine := backtest.NewEngine(cash)
 	btResult := engine.Run(st, bars)
 	btResult.Code = code
 	btResult.Market = market
 	btResult.Period = period
-	writeJSON(w, btResult)
+	resp := map[string]interface{}{
+		"strategy":      btResult.Strategy,
+		"code":          btResult.Code,
+		"market":        btResult.Market,
+		"period":        btResult.Period,
+		"initial_cash":  btResult.InitialCash,
+		"final_equity":  btResult.FinalEquity,
+		"bar_count":     btResult.BarCount,
+		"performance":   btResult.Performance,
+		"trades":        btResult.Trades,
+		"total_return":  btResult.Performance.TotalReturn,
+		"sharpe":        btResult.Performance.Sharpe,
+	}
+	writeJSON(w, resp)
 }
 
 func (s *Server) handleFinancial(w http.ResponseWriter, r *http.Request) {
@@ -766,7 +974,11 @@ func (s *Server) handleFinancial(w http.ResponseWriter, r *http.Request) {
 	defer respHTTP.Body.Close()
 	var result map[string]interface{}
 	json.NewDecoder(respHTTP.Body).Decode(&result)
-	writeJSON(w, result)
+	if inner, ok := result["result"].(map[string]interface{}); ok {
+		writeJSON(w, map[string]interface{}{"data": inner, "success": result["success"], "reason": result["reason"]})
+		return
+	}
+	writeJSON(w, map[string]interface{}{"data": result})
 }
 
 func (s *Server) handleAnnouncements(w http.ResponseWriter, r *http.Request) {
@@ -799,21 +1011,24 @@ func (s *Server) handleAnnouncements(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleExMarkets(w http.ResponseWriter, r *http.Request) {
 	type ExMarket struct {
-		Code        string `json:"code"`
-		Name        string `json:"name"`
-		Category    string `json:"category"`
+		Code   string `json:"code"`
+		Name   string `json:"name"`
+		Category int  `json:"category"`
 	}
 	markets := []ExMarket{
-		{Code: "HK_MAIN_BOARD", Name: "港股主板", Category: "stock"},
-		{Code: "HK_GEM_BOARD", Name: "港股创业板", Category: "stock"},
-		{Code: "US_STOCK", Name: "美股", Category: "stock"},
-		{Code: "FT_FUTURES", Name: "国内期货", Category: "futures"},
-		{Code: "IP_STOCK", Name: "外盘股票", Category: "stock"},
-		{Code: "IP_FUTURES", Name: "外盘期货", Category: "futures"},
-		{Code: "IP_FOREX", Name: "外汇", Category: "forex"},
-		{Code: "IP_INDEX", Name: "国际指数", Category: "index"},
+		{Code: "HK_INDEX", Name: "香港指数", Category: 27},
+		{Code: "ZZ_FUTURES", Name: "郑州商品", Category: 28},
+		{Code: "DL_FUTURES", Name: "大连商品", Category: 29},
+		{Code: "SH_FUTURES", Name: "上海期货", Category: 30},
+		{Code: "HK_MAIN_BOARD", Name: "香港主板", Category: 31},
+		{Code: "CFFEX_FUTURES", Name: "中金所期货", Category: 47},
+		{Code: "HK_GEM", Name: "香港创业板", Category: 48},
+		{Code: "HK_FUND", Name: "香港基金", Category: 49},
+		{Code: "HK_STOCK_GGT", Name: "港股通", Category: 71},
+		{Code: "US_STOCK", Name: "美国股票", Category: 74},
+		{Code: "HK_DARK_POOL", Name: "港股暗盘", Category: 98},
 	}
-	writeJSON(w, markets)
+	writeJSON(w, map[string]interface{}{"markets": markets})
 }
 
 func (s *Server) handleExBars(w http.ResponseWriter, r *http.Request) {
@@ -823,36 +1038,23 @@ func (s *Server) handleExBars(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "ex_market 和 code 参数必填")
 		return
 	}
-	// TDX TdxEx.PBFXT not available — return quote data as fallback
-	// push2his does not support HK(116.)/US(117.) secid format for K-lines
-	secid := ""
-	switch strings.ToLower(exMarket) {
-	case "hk", "h":
-		secid = "116." + code
-	case "us", "u":
-		secid = "117." + code
-	default:
-		secid = "116." + code
+	tcp := s.getTCPClient()
+	if tcp == nil {
+		writeError(w, 503, "TDX服务不可用")
+		return
 	}
-	hc := &http.Client{Timeout: 5 * time.Second}
-	quoteUrl := fmt.Sprintf("https://push2delay.eastmoney.com/api/qt/stock/get?secid=%s&fields=f43,f44,f45,f46,f47,f48,f49,f50,f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f71", secid)
-	respHTTP, err := hc.Get(quoteUrl)
+	cat := tdx.ExMarketCategory(exMarket)
+	period := queryInt(r, "period", 1)
+	count := queryInt(r, "count", 100)
+	if count > 2000 {
+		count = 2000
+	}
+	reply, err := tcp.ExGetKLineEx(cat, code, uint16(period), count)
 	if err != nil {
-		writeError(w, 500, fmt.Sprintf("获取数据失败: %v", err))
+		writeJSON(w, map[string]interface{}{"ex_market": exMarket, "code": code, "period": period, "count": count, "data": []interface{}{}, "error": "获取扩展市场K线失败: " + err.Error()})
 		return
 	}
-	defer respHTTP.Body.Close()
-	var quoteResult interface{}
-	if err := json.NewDecoder(respHTTP.Body).Decode(&quoteResult); err != nil {
-		writeError(w, 500, fmt.Sprintf("解析失败: %v", err))
-		return
-	}
-	writeJSON(w, map[string]interface{}{
-		"warning":     "K-line data not available for " + exMarket + " stocks via EastMoney API, returning quote data as fallback",
-		"ex_market":   exMarket,
-		"code":        code,
-		"quote_data":  quoteResult,
-	})
+	writeJSON(w, map[string]interface{}{"ex_market": exMarket, "code": code, "period": period, "category": cat, "data": reply})
 }
 
 func (s *Server) handleExQuote(w http.ResponseWriter, r *http.Request) {
@@ -862,48 +1064,57 @@ func (s *Server) handleExQuote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "ex_market 和 code 参数必填")
 		return
 	}
-	// TDX TdxEx.PBHQInfo not available — use EastMoney push2 for HK/US quotes
-	secid := ""
-	switch strings.ToLower(exMarket) {
-	case "hk", "h":
-		secid = "116." + code
-	case "us", "u":
-		secid = "117." + code
-	default:
-		secid = "116." + code
-	}
-	hc := &http.Client{Timeout: 10 * time.Second}
-	url := fmt.Sprintf("https://push2delay.eastmoney.com/api/qt/stock/get?secid=%s&fields=f43,f44,f45,f46,f47,f48,f49,f50,f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f71", secid)
-	respHTTP, err := hc.Get(url)
-	if err != nil {
-		writeError(w, 500, fmt.Sprintf("获取行情失败: %v", err))
+	tcp := s.getTCPClient()
+	if tcp == nil {
+		writeError(w, 503, "TDX服务不可用")
 		return
 	}
-	defer respHTTP.Body.Close()
-	var result interface{}
-	json.NewDecoder(respHTTP.Body).Decode(&result)
-	writeJSON(w, result)
+	cat := tdx.ExMarketCategory(exMarket)
+	reply, err := tcp.ExGetQuoteEx(cat, code)
+	if err != nil {
+		writeJSON(w, map[string]interface{}{"ex_market": exMarket, "code": code, "category": cat, "data": nil, "error": "获取扩展市场报价失败: " + err.Error()})
+		return
+	}
+	writeJSON(w, map[string]interface{}{"ex_market": exMarket, "code": code, "category": cat, "data": reply})
 }
 
 func (s *Server) handleOfflineDaily(w http.ResponseWriter, r *http.Request) {
 	market := r.URL.Query().Get("market")
 	code := r.URL.Query().Get("code")
+	if code != "" && market == "" {
+		if strings.HasPrefix(code, "0") || strings.HasPrefix(code, "3") {
+			market = "sz"
+		} else {
+			market = "sh"
+		}
+	}
 	if market == "" || code == "" {
 		writeError(w, 400, "market 和 code 参数必填")
 		return
 	}
-	market = strings.ToLower(market)
-	vipdoc := r.URL.Query().Get("vipdoc")
-	if vipdoc == "" {
-		home := offline.DetectHome()
-		if home == "" {
-			writeError(w, 404, "未找到通达信目录")
+	if market != "sz" && market != "sh" {
+		market = strings.ToLower(market)
+		if market != "sz" && market != "sh" {
+			writeError(w, 400, "market 只允许 sz 或 sh")
 			return
 		}
-		vipdoc = home + "/vipdoc"
 	}
-	filePath := fmt.Sprintf("%s/%s/day/%s%s.day", vipdoc, market, market, code)
-	bars, err := offline.ReadDaily(filePath)
+	if !isValidStockCode(code) {
+		writeError(w, 400, "code 必须为6位数字")
+		return
+	}
+	home := offline.DetectHome()
+	if home == "" {
+		writeError(w, 404, "未找到通达信目录")
+		return
+	}
+	safePath := filepath.Join(home, "vipdoc", market, "day", market+code+".day")
+	absHome, _ := filepath.Abs(home)
+	if !strings.HasPrefix(filepath.Clean(safePath)+string(filepath.Separator), absHome+string(filepath.Separator)) {
+		writeError(w, 400, "非法路径")
+		return
+	}
+	bars, err := offline.ReadDaily(safePath)
 	if err != nil {
 		writeError(w, 500, fmt.Sprintf("读取失败: %v", err))
 		return
@@ -928,18 +1139,31 @@ func (s *Server) handleOfflineMin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	market = strings.ToLower(market)
-	minType := queryParam(r, "min_type", "lc5")
-	vipdoc := r.URL.Query().Get("vipdoc")
-	if vipdoc == "" {
-		home := offline.DetectHome()
-		if home == "" {
-			writeError(w, 404, "未找到通达信目录")
-			return
-		}
-		vipdoc = home + "/vipdoc"
+	if market != "sz" && market != "sh" {
+		writeError(w, 400, "market 只允许 sz 或 sh")
+		return
 	}
-	filePath := fmt.Sprintf("%s/%s/minline/%s%s.%s", vipdoc, market, market, code, minType)
-	bars, err := offline.ReadMin(filePath)
+	if !isValidStockCode(code) {
+		writeError(w, 400, "code 必须为6位数字")
+		return
+	}
+	minType := queryParam(r, "min_type", "lc5")
+	if minType != "lc1" && minType != "lc5" {
+		writeError(w, 400, "min_type 只允许 lc1 或 lc5")
+		return
+	}
+	home := offline.DetectHome()
+	if home == "" {
+		writeError(w, 404, "未找到通达信目录")
+		return
+	}
+	safePath := filepath.Join(home, "vipdoc", market, "minline", market+code+"."+minType)
+	absHome, _ := filepath.Abs(home)
+	if !strings.HasPrefix(filepath.Clean(safePath)+string(filepath.Separator), absHome+string(filepath.Separator)) {
+		writeError(w, 400, "非法路径")
+		return
+	}
+	bars, err := offline.ReadMin(safePath)
 	if err != nil {
 		writeError(w, 500, fmt.Sprintf("读取失败: %v", err))
 		return
@@ -958,36 +1182,69 @@ func (s *Server) handleOfflineMin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleOfflineGBBQ(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Query().Get("path")
-	if path == "" {
-		writeError(w, 400, "path 参数必填")
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		writeError(w, 400, "code 参数必填 (6位股票代码)")
 		return
 	}
-	records, err := offline.ReadGBBQ(path)
+	if !isValidStockCode(code) {
+		writeError(w, 400, "code 必须为6位数字")
+		return
+	}
+	home := offline.DetectHome()
+	if home == "" {
+		writeError(w, 404, "未找到通达信目录")
+		return
+	}
+	marketDir := "sh"
+	if strings.HasPrefix(code, "0") || strings.HasPrefix(code, "3") {
+		marketDir = "sz"
+	}
+	safePath := filepath.Join(home, "vipdoc", marketDir, "gbbq", code+".gbbq")
+	absHome, _ := filepath.Abs(home)
+	if !strings.HasPrefix(filepath.Clean(safePath)+string(filepath.Separator), absHome+string(filepath.Separator)) {
+		writeError(w, 400, "非法路径")
+		return
+	}
+	records, err := offline.ReadGBBQ(safePath)
 	if err != nil {
 		writeError(w, 500, fmt.Sprintf("读取失败: %v", err))
 		return
 	}
 	writeJSON(w, map[string]interface{}{
-		"path":    path,
+		"code":    code,
 		"count":   len(records),
 		"records": records,
 	})
 }
 
 func (s *Server) handleOfflineBlocks(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Query().Get("path")
-	if path == "" {
-		writeError(w, 400, "path 参数必填")
+	home := offline.DetectHome()
+	if home == "" {
+		writeError(w, 404, "未找到通达信目录")
 		return
 	}
-	blocks, err := offline.ReadBlocks(path)
+	fileName := r.URL.Query().Get("file")
+	if fileName == "" {
+		fileName = "block_gn.dat"
+	}
+	if !isValidBlockFile(fileName) {
+		writeError(w, 400, "file 参数只允许 block_gn.dat/block_zs.dat/block_fg.dat/block_fl.dat")
+		return
+	}
+	safePath := filepath.Join(home, "T0002", "hq_cache", fileName)
+	absHome, _ := filepath.Abs(home)
+	if !strings.HasPrefix(filepath.Clean(safePath)+string(filepath.Separator), absHome+string(filepath.Separator)) {
+		writeError(w, 400, "非法路径")
+		return
+	}
+	blocks, err := offline.ReadBlocks(safePath)
 	if err != nil {
 		writeError(w, 500, fmt.Sprintf("读取失败: %v", err))
 		return
 	}
 	writeJSON(w, map[string]interface{}{
-		"path":   path,
+		"file":   fileName,
 		"count":  len(blocks),
 		"blocks": blocks,
 	})
@@ -998,18 +1255,15 @@ func (s *Server) handleOfflineHome(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{
 		"found": home != "",
 		"home":  home,
+		"data":  map[string]interface{}{"found": home != "", "home": home},
 	})
 }
 
 func (s *Server) handleOfflineExFiles(w http.ResponseWriter, r *http.Request) {
-	vipdoc := r.URL.Query().Get("vipdoc")
-	if vipdoc == "" {
-		home := offline.DetectHome()
-		if home == "" {
-			writeError(w, 404, "未找到通达信目录")
-			return
-		}
-		vipdoc = home + "/vipdoc"
+	home := offline.DetectHome()
+	if home == "" {
+		writeError(w, 404, "未找到通达信目录")
+		return
 	}
 	type exFile struct {
 		Market string `json:"market"`
@@ -1022,8 +1276,7 @@ func (s *Server) handleOfflineExFiles(w http.ResponseWriter, r *http.Request) {
 		{Market: "71", Code: "71#2_HSI", Name: "恒生指数"},
 	}
 	writeJSON(w, map[string]interface{}{
-		"vipdoc": vipdoc,
-		"files":  known,
+		"files": known,
 	})
 }
 
@@ -1033,22 +1286,27 @@ func (s *Server) handleOfflineExDaily(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "code 参数必填")
 		return
 	}
-	vipdoc := r.URL.Query().Get("vipdoc")
-	if vipdoc == "" {
-		home := offline.DetectHome()
-		if home == "" {
-			writeError(w, 404, "未找到通达信目录")
-			return
-		}
-		vipdoc = home + "/vipdoc"
-	}
 	parts := strings.SplitN(code, "#", 2)
 	if len(parts) != 2 {
 		writeError(w, 400, "code 格式应为 '市场#代码'")
 		return
 	}
-	filePath := fmt.Sprintf("%s/ds/%s/day/%s.day", vipdoc, parts[0], code)
-	bars, err := offline.ReadDaily(filePath)
+	if !isValidExCode(parts[0]) {
+		writeError(w, 400, "市场代码只允许数字")
+		return
+	}
+	home := offline.DetectHome()
+	if home == "" {
+		writeError(w, 404, "未找到通达信目录")
+		return
+	}
+	safePath := filepath.Join(home, "vipdoc", "ds", parts[0], "day", code+".day")
+	absHome, _ := filepath.Abs(home)
+	if !strings.HasPrefix(filepath.Clean(safePath)+string(filepath.Separator), absHome+string(filepath.Separator)) {
+		writeError(w, 400, "非法路径")
+		return
+	}
+	bars, err := offline.ReadDaily(safePath)
 	if err != nil {
 		writeError(w, 500, fmt.Sprintf("读取失败: %v", err))
 		return
@@ -1319,10 +1577,10 @@ func (s *Server) handleMarketStat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
-	// TDX PBServerInfo returns 503 — return static server info
 	writeJSON(w, map[string]interface{}{
 		"version":   "1.0.2",
 		"timestamp": time.Now().Format(time.RFC3339),
+		"data":      []string{"TDX TCP", "EastMoney API", "Sina Finance"},
 		"data_sources": []string{"TDX TCP", "EastMoney API", "Sina Finance"},
 		"status":      "running",
 	})
@@ -1407,9 +1665,16 @@ func (s *Server) handleSecurityCount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer respHTTP.Body.Close()
-	var result interface{}
+	var result map[string]interface{}
 	json.NewDecoder(respHTTP.Body).Decode(&result)
-	writeJSON(w, result)
+	meta, _ := result["fn_meta"].(map[string]interface{})
+	countVal := 0
+	if meta != nil {
+		if c, ok := meta["count"].(float64); ok {
+			countVal = int(c)
+		}
+	}
+	writeJSON(w, map[string]interface{}{"count": countVal, "market": market, "data": result})
 }
 
 func (s *Server) handleBelongBoard(w http.ResponseWriter, r *http.Request) {
@@ -1501,6 +1766,7 @@ func (s *Server) handleMarketOverview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{
 		"market_stat": statData,
 		"board_data":  boardData,
+		"data":        map[string]interface{}{"market_stat": statData, "board_data": boardData},
 	})
 }
 

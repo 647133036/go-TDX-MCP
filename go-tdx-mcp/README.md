@@ -1,8 +1,8 @@
-# TDX Finance MCP v1.0.2
+# TDX Finance MCP v1.0.3
 
 通达信金融数据 MCP 服务器，提供 A 股、港股、美股、加密货币、期货等多市场金融数据服务。
 
-**215+ 个 MCP 工具** + **45+ 个投资技能**，覆盖实时行情、K 线、技术指标、缠论分析、量化回测、资金流向、板块分析、基金数据、宏观数据、新闻情感等全场景。
+**443+ 个 MCP 工具** + **45+ 个投资技能**，覆盖实时行情、K 线、技术指标、缠论分析、量化回测、资金流向、板块分析、基金数据、宏观数据、新闻情感等全场景。
 
 ## 重要说明：同代码标的区分
 
@@ -143,6 +143,7 @@ tdx_ocr_recognize    OCR 图像识别
 |------|------|------|------|
 | `/api/v1/quotes` | GET | `codes` | 实时报价（支持多代码） |
 | `/api/v1/bars` | GET | `code`, `market`, `period`, `count` | K 线数据 |
+| `/api/v1/bars-index` | GET | `code`, `market`, `period`, `count` | 指数 K 线 |
 | `/api/v1/symbol-info` | GET | `code`, `market` | 标的基本信息 |
 | `/api/v1/quote-list` | GET | `count`, `sort_type` | 行情列表 |
 | `/api/v1/market-stat` | GET | - | 市场统计 |
@@ -152,7 +153,7 @@ tdx_ocr_recognize    OCR 图像识别
 | 端点 | 方法 | 参数 | 说明 |
 |------|------|------|------|
 | `/api/v1/indicator/list` | GET | - | 指标列表（34 个） |
-| `/api/v1/indicator/compute` | POST | data, indicators | 指标计算 |
+| `/api/v1/indicator/compute` | GET/POST | `code`, `market`, `indicators` 或 POST body | 指标计算 |
 | `/api/v1/indicator/compute_all` | GET | `code`, `market`, `indicators` | 批量计算 |
 
 ### 缠论与回测
@@ -160,7 +161,7 @@ tdx_ocr_recognize    OCR 图像识别
 | 端点 | 方法 | 参数 | 说明 |
 |------|------|------|------|
 | `/api/v1/chanlun/analyze` | GET | `code`, `market`, `period`, `count` | 缠论分析（分型/笔/中枢/买卖点） |
-| `/api/v1/backtest/run` | GET | `code`, `market`, `strategy`, `count` | 量化回测 |
+| `/api/v1/backtest/run` | GET/POST | `code`, `market`, `strategy`, `count` | 量化回测 |
 
 ### 财务与公告
 
@@ -178,7 +179,7 @@ tdx_ocr_recognize    OCR 图像识别
 | `/api/v1/unusual` | GET | `market`, `count` | 异动监控 |
 | `/api/v1/board/list` | GET | `board_type`, `top_n` | 板块列表 |
 | `/api/v1/board/members` | GET | `board_symbol`, `count` | 板块成分股 |
-| `/api/v1/block` | GET | `filename` | 板块文件数据 |
+| `/api/v1/block` | GET | `file` | 板块文件数据（`block_zs.dat`/`block_gn.dat`/`block_fz.dat`/`block_fy.dat`） |
 | `/api/v1/market-overview` | GET | - | 市场概览 |
 
 ### 扩展市场
@@ -188,6 +189,13 @@ tdx_ocr_recognize    OCR 图像识别
 | `/api/v1/ex/markets` | GET | - | 扩展市场列表 |
 | `/api/v1/ex/quote` | GET | `ex_market`, `code` | 扩展市场报价 |
 | `/api/v1/ex/bars` | GET | `ex_market`, `code` | 扩展市场 K 线 |
+
+### 选股与信号
+
+| 端点 | 方法 | 参数 | 说明 |
+|------|------|------|------|
+| `/api/v1/screen/scan` | GET/POST | `strategy`, `codes`, `period` 等 | 选股扫描 |
+| `/api/v1/screen/rank` | GET/POST | `strategy`, `codes` | 信号排名 |
 
 ### 宏观数据
 
@@ -216,8 +224,12 @@ tdx_ocr_recognize    OCR 图像识别
 | 端点 | 方法 | 参数 | 说明 |
 |------|------|------|------|
 | `/api/v1/offline/home` | GET | - | 检测 TDX 数据目录 |
-| `/api/v1/offline/daily` | GET | `code`, `market` | 日线数据 |
-| `/api/v1/offline/min` | GET | `code`, `market` | 分钟线数据 |
+| `/api/v1/offline/daily` | GET | `code`, `market`, `minType` | 日线/分钟线数据 |
+| `/api/v1/offline/min` | GET | `code`, `market`, `minType` | 分钟线数据（5/15/30/60 分钟） |
+| `/api/v1/offline/gbbq` | GET | `code`, `market` | 股本变迁数据 |
+| `/api/v1/offline/blocks` | GET | `file` | 板块文件（白名单：`block_zs.dat`/`block_gn.dat`/`block_fz.dat`/`block_fy.dat`） |
+
+> 离线端点依赖本地通达信客户端数据（`vipdoc` 目录），无 TDX 安装时返回 404。
 
 ### WebSocket 实时推送
 
@@ -235,7 +247,17 @@ tdx_ocr_recognize    OCR 图像识别
 |------|------|------|
 | `/api/v1/health` | GET | 健康检查 |
 | `/api/v1/server-info` | GET | 服务器信息 |
+| `/api/v1/server/test` | GET | 服务器连通性测试（白名单模式） |
+| `/api/v1/fetch-urls` | GET | 批量抓取 URL（仅允许指定白名单域名） |
 | `/` | GET | API 文档首页 |
+
+## 安全
+
+### v1.0.3 安全加固
+
+- **路径穿越防护**：`offline/daily`、`offline/min`、`offline/gbbq`、`offline/blocks` 全面移除可绕过校验的自由参数（`path`/`vipdoc`），改为白名单校验 + `filepath.Join` 前缀限制
+- **SSRF 防护**：`server/test` 和 `fetch-urls` 改用预设白名单 host，拒绝非白名单目标，阻止内网探测和云元数据访问
+- **目录枚举防护**：`offline/blocks` 限定 4 个合法文件名（`block_zs.dat`/`block_gn.dat`/`block_fz.dat`/`block_fy.dat`）
 
 ## 数据源
 
@@ -270,10 +292,11 @@ go-TDX-MCP/
 ├── config.json           # 配置文件
 ├── web/
 │   ├── server.go         # Web API + WebSocket 服务器
+│   ├── handlers_new.go   # 新增端点处理器
 │   └── server_test.go    # 回归测试
 ├── tdx/
 │   ├── client.go         # HTTP TQLEX 客户端
-│   ├── tcp_client.go     # TDX TCP 客户端
+│   ├── tcp_client.go     # TDX TCP 客户端（含 K 线获取/自动重连）
 │   ├── unified_client.go # 统一客户端（TCP + HTTP 智能路由）
 │   ├── unified_bridge.go # 桥接层（TCP ↔ HTTP 格式转换）
 │   ├── collector.go      # 多主机数据采集器
@@ -302,7 +325,24 @@ go test ./...
 go vet ./...
 ```
 
+功能测试：
+```bash
+python3 test_all_api.py
+```
+
+测试覆盖率：70/72 通过（2 个离线端点依赖本地 TDX 安装，无安装时返回 404）。
+
 ## Changelog
+
+### v1.0.3（2026-08-23）
+- 安全加固：`offline/gbbq` 移除 `path` 参数，强制 `code` 6 位数字 + `filepath.Join` 前缀校验，消除任意文件读风险
+- 安全加固：`server/test` 改用白名单模式，拒绝非白名单 host，消除 SSRF 漏洞
+- 安全加固：`offline/blocks` 移除 `path` 参数，限定 4 个合法文件名白名单，消除目录枚举风险
+- 安全加固：`offline/daily`/`offline/min`/`offline/ex-daily` 移除 `vipdoc` 参数，增加 `market`/`code`/`minType` 白名单校验，消除路径穿越风险
+- 修复：`fund-flow` 500 错误（MAC 服务器 broken pipe）→ `reconnectMAC` 先 `Disconnect()` 再重连
+- 修复：`reconnectMain`/`reconnectEx` 重连不彻底 → 先 `Disconnect()` 再重连，确保 gotdx `conn` 置 nil
+- 修复：`ensureMACConnected` 缺少互斥锁保护 → 新增 `macMu` 锁
+- `fetchKlines` 增加 TCP 原生 K 线获取回退（三级数据源：TCP → 离线 → HTTP）
 
 ### v1.0.2（2026-08-04）
 - 修复 K 线 HTTP ListItem 解析字段映射错位：Close/High/Low 与 Vol/Amount 索引颠倒

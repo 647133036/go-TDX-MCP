@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/bensema/gotdx"
@@ -12,11 +14,26 @@ import (
 	"github.com/bensema/gotdx/types"
 )
 
+func isConnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "EOF") ||
+		strings.Contains(msg, "closed") ||
+		strings.Contains(msg, "refused")
+}
+
 // TDXTCPClient wraps gotdx for our MCP server.
 type TDXTCPClient struct {
-	mainClient  *gotdx.Client
-	exClient    *gotdx.Client
-	macClient   *gotdx.Client
+	mainClient *gotdx.Client
+	exClient   *gotdx.Client
+	macClient  *gotdx.Client
+	mainMu     sync.Mutex
+	exMu       sync.Mutex
+	macMu      sync.Mutex
 	mainAddr    string
 	exAddr      string
 	macAddr     string
@@ -147,6 +164,95 @@ func (c *TDXTCPClient) withRetry(fn func() error) error {
 	return fmt.Errorf("failed after 3 retries: %w", lastErr)
 }
 
+// ensureMainConnected lazily connects the main A-share server.
+func (c *TDXTCPClient) ensureMainConnected() error {
+	if c.mainClient == nil {
+		return fmt.Errorf("main client not initialized")
+	}
+	c.mainMu.Lock()
+	defer c.mainMu.Unlock()
+	if c.mainAddr == "" {
+		_, err := c.mainClient.Connect()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// reconnectMain closes and reconnects the main server.
+func (c *TDXTCPClient) reconnectMain() error {
+	if c.mainClient == nil {
+		return fmt.Errorf("main client not initialized")
+	}
+	c.mainMu.Lock()
+	defer c.mainMu.Unlock()
+	c.mainAddr = ""
+	_ = c.mainClient.Disconnect()
+	_, err := c.mainClient.Connect()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureExConnected lazily connects the extension market server.
+func (c *TDXTCPClient) ensureExConnected() error {
+	if c.exClient == nil {
+		return fmt.Errorf("ex client not initialized")
+	}
+	c.exMu.Lock()
+	defer c.exMu.Unlock()
+	if c.exAddr == "" {
+		_, err := c.exClient.ConnectEx()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// reconnectEx closes and reconnects the ex server.
+func (c *TDXTCPClient) reconnectEx() error {
+	if c.exClient == nil {
+		return fmt.Errorf("ex client not initialized")
+	}
+	c.exMu.Lock()
+	defer c.exMu.Unlock()
+	c.exAddr = ""
+	_ = c.exClient.Disconnect()
+	_, err := c.exClient.ConnectEx()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureMACConnected lazily connects the MAC (market monitor) server.
+func (c *TDXTCPClient) ensureMACConnected() error {
+	if c.macClient == nil {
+		return fmt.Errorf("mac client not initialized")
+	}
+	c.macMu.Lock()
+	defer c.macMu.Unlock()
+	if c.macAddr == "" {
+		return c.ConnectMAC(context.Background())
+	}
+	return nil
+}
+
+// reconnectMAC closes and reconnects the MAC server.
+func (c *TDXTCPClient) reconnectMAC() error {
+	if c.macClient == nil {
+		return fmt.Errorf("mac client not initialized")
+	}
+	c.macMu.Lock()
+	defer c.macMu.Unlock()
+	c.macAddr = ""
+	_ = c.macClient.Disconnect()
+	return c.ConnectMAC(context.Background())
+}
+
 // GetQuote fetches real-time quote for a stock.
 func (c *TDXTCPClient) GetQuote(code string, market int) (*proto.SecurityQuote, error) {
 	var m types.Market
@@ -159,6 +265,9 @@ func (c *TDXTCPClient) GetQuote(code string, market int) (*proto.SecurityQuote, 
 		return nil, fmt.Errorf("unknown market: %d", market)
 	}
 
+	if err := c.ensureMainConnected(); err != nil {
+		return nil, fmt.Errorf("quote connect: %w", err)
+	}
 	result, err := c.mainClient.StockQuotesDetail([]uint8{m.Uint8()}, []string{code})
 	if err != nil {
 		return nil, fmt.Errorf("quote query: %w", err)
@@ -213,6 +322,9 @@ func (c *TDXTCPClient) GetKLine(code string, market int, period string, count in
 		adjustType = types.AdjustHFQ
 	}
 
+	if err := c.ensureMainConnected(); err != nil {
+		return nil, fmt.Errorf("kline connect: %w", err)
+	}
 	bars, err := c.mainClient.StockFullKLine(category, m.Uint8(), code, 1, adjustType, nil)
 	if err != nil {
 		return nil, fmt.Errorf("kline query: %w", err)
@@ -235,6 +347,9 @@ func (c *TDXTCPClient) GetTickChart(code string, market int) ([]proto.MinuteTime
 		return nil, fmt.Errorf("unknown market: %d", market)
 	}
 
+	if err := c.ensureMainConnected(); err != nil {
+		return nil, fmt.Errorf("tick chart connect: %w", err)
+	}
 	reply, err := c.mainClient.GetMinuteTimeData(m.Uint8(), code)
 	if err != nil {
 		return nil, fmt.Errorf("tick chart query: %w", err)
@@ -254,6 +369,9 @@ func (c *TDXTCPClient) GetTransaction(code string, market int, count int) ([]pro
 		return nil, fmt.Errorf("unknown market: %d", market)
 	}
 
+	if err := c.ensureMainConnected(); err != nil {
+		return nil, fmt.Errorf("transaction connect: %w", err)
+	}
 	reply, err := c.mainClient.GetTransactionData(m.Uint8(), code, 0, uint16(count))
 	if err != nil {
 		return nil, fmt.Errorf("transaction query: %w", err)
@@ -273,6 +391,9 @@ func (c *TDXTCPClient) GetAuction(code string, market int) ([]proto.AuctionData,
 		return nil, fmt.Errorf("unknown market: %d", market)
 	}
 
+	if err := c.ensureMainConnected(); err != nil {
+		return nil, fmt.Errorf("auction connect: %w", err)
+	}
 	reply, err := c.mainClient.GetAuction(m.Uint8(), code, 0, 100)
 	if err != nil {
 		return nil, fmt.Errorf("auction query: %w", err)
@@ -292,7 +413,15 @@ func (c *TDXTCPClient) GetCapitalFlow(code string, market int) (*proto.MACCapita
 		return nil, fmt.Errorf("unknown market: %d", market)
 	}
 
+	if err := c.ensureMACConnected(); err != nil {
+		return nil, fmt.Errorf("capital flow connect: %w", err)
+	}
 	data, err := c.macClient.MACCapitalFlow(m.Uint8(), code)
+	if err != nil && isConnError(err) {
+		if rerr := c.reconnectMAC(); rerr == nil {
+			data, err = c.macClient.MACCapitalFlow(m.Uint8(), code)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("capital flow query: %w", err)
 	}
@@ -311,6 +440,9 @@ func (c *TDXTCPClient) GetUnusual(market int, count int) ([]proto.UnusualData, e
 		m = types.MarketSZ
 	}
 
+	if err := c.ensureMainConnected(); err != nil {
+		return nil, fmt.Errorf("unusual connect: %w", err)
+	}
 	reply, err := c.mainClient.GetUnusual(m.Uint8(), 0, uint32(count))
 	if err != nil {
 		return nil, fmt.Errorf("unusual query: %w", err)
@@ -338,7 +470,15 @@ func (c *TDXTCPClient) GetSymbolInfo(code string, market int) (*proto.MACSymbolI
 		return nil, fmt.Errorf("unknown market: %d", market)
 	}
 
+	if err := c.ensureMACConnected(); err != nil {
+		return nil, fmt.Errorf("symbol info connect: %w", err)
+	}
 	data, err := c.macClient.MACSymbolInfo(m.Uint8(), code)
+	if err != nil && isConnError(err) {
+		if rerr := c.reconnectMAC(); rerr == nil {
+			data, err = c.macClient.MACSymbolInfo(m.Uint8(), code)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("symbol info query: %w", err)
 	}
@@ -357,6 +497,9 @@ func (c *TDXTCPClient) GetF10(code string, market int) (*gotdx.CompanyInfoBundle
 		return nil, fmt.Errorf("unknown market: %d", market)
 	}
 
+	if err := c.ensureMainConnected(); err != nil {
+		return nil, fmt.Errorf("F10 connect: %w", err)
+	}
 	data, err := c.mainClient.GetCompanyInfo(m.Uint8(), code)
 	if err != nil {
 		return nil, fmt.Errorf("F10 query: %w", err)
@@ -376,6 +519,9 @@ func (c *TDXTCPClient) GetFinanceInfo(code string, market int) (*proto.GetFinanc
 		return nil, fmt.Errorf("unknown market: %d", market)
 	}
 
+	if err := c.ensureMainConnected(); err != nil {
+		return nil, fmt.Errorf("finance info connect: %w", err)
+	}
 	data, err := c.mainClient.GetFinanceInfo(m.Uint8(), code)
 	if err != nil {
 		return nil, fmt.Errorf("finance info query: %w", err)
@@ -395,6 +541,9 @@ func (c *TDXTCPClient) GetXDXRInfo(code string, market int) (*proto.GetXDXRInfoR
 		return nil, fmt.Errorf("unknown market: %d", market)
 	}
 
+	if err := c.ensureMainConnected(); err != nil {
+		return nil, fmt.Errorf("xdxr info connect: %w", err)
+	}
 	data, err := c.mainClient.GetXDXRInfo(m.Uint8(), code)
 	if err != nil {
 		return nil, fmt.Errorf("xdxr info query: %w", err)
@@ -404,6 +553,9 @@ func (c *TDXTCPClient) GetXDXRInfo(code string, market int) (*proto.GetXDXRInfoR
 
 // ExGetQuote fetches extension market (HK/US/futures) quote.
 func (c *TDXTCPClient) ExGetQuote(code string, category uint8) (*proto.ExQuoteItem, error) {
+	if err := c.ensureExConnected(); err != nil {
+		return nil, fmt.Errorf("ex connect: %w", err)
+	}
 	data, err := c.exClient.ExQuote(category, code)
 	if err != nil {
 		return nil, fmt.Errorf("ex quote query: %w", err)
@@ -413,6 +565,9 @@ func (c *TDXTCPClient) ExGetQuote(code string, category uint8) (*proto.ExQuoteIt
 
 // ExGetKLine fetches extension market K-line.
 func (c *TDXTCPClient) ExGetKLine(category uint8, code string, period uint16, count int) ([]proto.ExKLineItem, error) {
+	if err := c.ensureExConnected(); err != nil {
+		return nil, fmt.Errorf("ex connect: %w", err)
+	}
 	bars, err := c.exClient.ExKLine(category, code, period, 0, uint16(count), 1)
 	if err != nil {
 		return nil, fmt.Errorf("ex kline query: %w", err)
@@ -420,11 +575,163 @@ func (c *TDXTCPClient) ExGetKLine(category uint8, code string, period uint16, co
 	return bars, nil
 }
 
-// ExGetQuotes batch fetches extension market quotes.
-func (c *TDXTCPClient) ExGetQuotes(categories []uint8, codes []string) ([]proto.ExQuoteItem, error) {
-	data, err := c.exClient.ExQuotes(categories, codes)
+// ExGetCount fetches total instrument count in ex markets.
+func (c *TDXTCPClient) ExGetCount() (*proto.ExGetCountReply, error) {
+	if err := c.ensureExConnected(); err != nil {
+		return nil, fmt.Errorf("ex connect: %w", err)
+	}
+	data, err := c.exClient.ExGetCount()
+	if err != nil {
+		return nil, fmt.Errorf("ex count query: %w", err)
+	}
+	return data, nil
+}
+
+// ExGetList fetches instrument list from ex markets.
+func (c *TDXTCPClient) ExGetList(start uint32, count uint16) (*proto.ExGetListReply, error) {
+	if err := c.ensureExConnected(); err != nil {
+		return nil, fmt.Errorf("ex connect: %w", err)
+	}
+	data, err := c.exClient.ExGetList(start, count)
+	if err != nil {
+		return nil, fmt.Errorf("ex list query: %w", err)
+	}
+	return data, nil
+}
+
+// ExGetKLineEx fetches K-line data for extension markets.
+// period: 1=daily, 2=weekly, 3=monthly, 4=quarterly, 5=yearly
+// count: number of bars to fetch
+func (c *TDXTCPClient) ExGetKLineEx(category uint8, code string, period uint16, count int) (*proto.ExGetKLineReply, error) {
+	if err := c.ensureExConnected(); err != nil {
+		return nil, fmt.Errorf("ex connect: %w", err)
+	}
+	data, err := c.exClient.ExGetKLine(category, code, period, 0, uint16(count), 1)
+	if err != nil {
+		return nil, fmt.Errorf("ex kline query: %w", err)
+	}
+	return data, nil
+}
+
+// ExMarketCategory returns the TDX ex protocol category number for a market name.
+func ExMarketCategory(name string) uint8 {
+	n := strings.ToUpper(name)
+	mapping := map[string]uint8{
+		"HK_INDEX":        27,
+		"ZZ_FUTURES":      28,
+		"DL_FUTURES":      29,
+		"SH_FUTURES":      30,
+		"HK_MAIN_BOARD":   31,
+		"CFFEX_FUTURES":   47,
+		"HK_GEM":          48,
+		"HK_FUND":         49,
+		"HK_STOCK_GGT":    71,
+		"US_STOCK":        74,
+		"HK_DARK_POOL":    98,
+	}
+	cat, ok := mapping[n]
+	if !ok {
+		switch n {
+		case "HK", "H":
+			cat = 31
+		case "US", "U":
+			cat = 74
+		default:
+			if v := queryIntValue(n); v > 0 && v <= 255 {
+				cat = uint8(v)
+			} else {
+				cat = 31
+			}
+		}
+	}
+	return cat
+}
+
+func queryIntValue(s string) int {
+	for _, ch := range s {
+		if ch < '0' || ch > '9' {
+			return 0
+		}
+	}
+	var v int
+	for _, ch := range s {
+		v = v*10 + int(ch-'0')
+	}
+	return v
+}
+
+// ExGetQuoteEx fetches a single ex market quote.
+func (c *TDXTCPClient) ExGetQuoteEx(category uint8, code string) (*proto.ExGetQuoteReply, error) {
+	if err := c.ensureExConnected(); err != nil {
+		return nil, fmt.Errorf("ex connect: %w", err)
+	}
+	data, err := c.exClient.ExGetQuote(category, code)
+	if err != nil {
+		return nil, fmt.Errorf("ex quote query: %w", err)
+	}
+	return data, nil
+}
+func (c *TDXTCPClient) ExGetQuotesEx(stocks []struct{ Category uint8; Code string }) (*proto.ExGetQuotesReply, error) {
+	if err := c.ensureExConnected(); err != nil {
+		return nil, fmt.Errorf("ex connect: %w", err)
+	}
+	cats := make([]uint8, len(stocks))
+	codes := make([]string, len(stocks))
+	for i, s := range stocks {
+		cats[i] = s.Category
+		codes[i] = s.Code
+	}
+	data, err := c.exClient.ExGetQuotes(cats, codes)
 	if err != nil {
 		return nil, fmt.Errorf("ex quotes query: %w", err)
+	}
+	return data, nil
+}
+
+// ExGetChartSampling fetches chart sampling data for extension markets.
+func (c *TDXTCPClient) ExGetChartSampling(category uint8, code string) (*proto.ExGetChartSamplingReply, error) {
+	if err := c.ensureExConnected(); err != nil {
+		return nil, fmt.Errorf("ex connect: %w", err)
+	}
+	data, err := c.exClient.ExGetChartSampling(category, code)
+	if err != nil {
+		return nil, fmt.Errorf("ex chart sampling query: %w", err)
+	}
+	return data, nil
+}
+
+// ExGetMinuteTimeData fetches minute time data for extension markets.
+func (c *TDXTCPClient) ExGetMinuteTimeData(category uint8, code string) (*proto.ExGetTickChartReply, error) {
+	if err := c.ensureExConnected(); err != nil {
+		return nil, fmt.Errorf("ex connect: %w", err)
+	}
+	data, err := c.exClient.ExGetTickChart(category, code)
+	if err != nil {
+		return nil, fmt.Errorf("ex tick chart query: %w", err)
+	}
+	return data, nil
+}
+
+// ExGetHistoryMinuteTimeData fetches historical minute time data.
+func (c *TDXTCPClient) ExGetHistoryMinuteTimeData(date uint32, category uint8, code string) (*proto.ExGetHistoryTickChartReply, error) {
+	if err := c.ensureExConnected(); err != nil {
+		return nil, fmt.Errorf("ex connect: %w", err)
+	}
+	data, err := c.exClient.ExGetHistoryTickChart(date, category, code)
+	if err != nil {
+		return nil, fmt.Errorf("ex history tick chart query: %w", err)
+	}
+	return data, nil
+}
+
+// ExGetTransactionData fetches transaction data for extension markets.
+func (c *TDXTCPClient) ExGetTransactionData(date uint32, category uint8, code string) (*proto.ExGetHistoryTransactionReply, error) {
+	if err := c.ensureExConnected(); err != nil {
+		return nil, fmt.Errorf("ex connect: %w", err)
+	}
+	data, err := c.exClient.ExGetHistoryTransaction(date, category, code)
+	if err != nil {
+		return nil, fmt.Errorf("ex transaction query: %w", err)
 	}
 	return data, nil
 }
@@ -620,13 +927,19 @@ type SectorBoard struct {
 
 // GetSectorBoards fetches all boards of a given type.
 func (c *TDXTCPClient) GetSectorBoards(bt BlockType) ([]SectorBoard, error) {
+	if err := c.ensureMainConnected(); err != nil {
+		return nil, fmt.Errorf("sector connect: %w", err)
+	}
 	data, err := c.mainClient.GetBlockFile(bt.BlockFilename())
 	if err != nil {
 		return nil, fmt.Errorf("get block file %s: %w", bt.BlockFilename(), err)
 	}
+	if len(data) == 0 {
+		return []SectorBoard{}, nil
+	}
 	groups, err := gotdx.ParseBlockGroups(data)
 	if err != nil {
-		return nil, fmt.Errorf("parse block groups: %w", err)
+		return []SectorBoard{}, nil
 	}
 	boards := make([]SectorBoard, len(groups))
 	for i, g := range groups {
@@ -642,7 +955,9 @@ func (c *TDXTCPClient) GetSectorBoards(bt BlockType) ([]SectorBoard, error) {
 
 // GetSectorBoardStocks fetches constituent stocks of a specific board.
 func (c *TDXTCPClient) GetSectorBoardStocks(boardCode string) ([]string, error) {
-	// Try to find the board file by scanning common filenames
+	if err := c.ensureMainConnected(); err != nil {
+		return nil, fmt.Errorf("sector connect: %w", err)
+	}
 	files := []string{"block_gy.dat", "block_gn.dat", "block_dy.dat", "block_zs.dat", "block_zc.dat", "block_zdy.dat"}
 	for _, filename := range files {
 		data, err := c.mainClient.GetBlockFile(filename)
@@ -660,4 +975,185 @@ func (c *TDXTCPClient) GetSectorBoardStocks(boardCode string) ([]string, error) 
 		}
 	}
 	return nil, fmt.Errorf("board %s not found", boardCode)
+}
+
+// GetVolumeProfile fetches volume distribution profile.
+func (c *TDXTCPClient) GetVolumeProfile(code string, market int) (*proto.GetVolumeProfileReply, error) {
+	var m types.Market
+	switch market {
+	case 0:
+		m = types.MarketSZ
+	case 1:
+		m = types.MarketSH
+	default:
+		return nil, fmt.Errorf("unknown market: %d", market)
+	}
+	if err := c.ensureMainConnected(); err != nil {
+		return nil, fmt.Errorf("volume profile connect: %w", err)
+	}
+	data, err := c.mainClient.GetVolumeProfile(m.Uint8(), code)
+	if err != nil {
+		return nil, fmt.Errorf("volume profile query: %w", err)
+	}
+	return data, nil
+}
+
+// GetIndexInfo fetches index 5-level order book.
+func (c *TDXTCPClient) GetIndexInfo(code string, market int) (*proto.GetIndexInfoReply, error) {
+	var m types.Market
+	switch market {
+	case 0:
+		m = types.MarketSZ
+	case 1:
+		m = types.MarketSH
+	default:
+		return nil, fmt.Errorf("unknown market: %d", market)
+	}
+	if err := c.ensureMainConnected(); err != nil {
+		return nil, fmt.Errorf("index info connect: %w", err)
+	}
+	data, err := c.mainClient.GetIndexInfo(m.Uint8(), code)
+	if err != nil {
+		return nil, fmt.Errorf("index info query: %w", err)
+	}
+	return data, nil
+}
+
+// GetIndexMomentum fetches index market momentum data.
+func (c *TDXTCPClient) GetIndexMomentum(code string, market int) (*proto.GetIndexMomentumReply, error) {
+	var m types.Market
+	switch market {
+	case 0:
+		m = types.MarketSZ
+	case 1:
+		m = types.MarketSH
+	default:
+		return nil, fmt.Errorf("unknown market: %d", market)
+	}
+	if err := c.ensureMainConnected(); err != nil {
+		return nil, fmt.Errorf("index momentum connect: %w", err)
+	}
+	data, err := c.mainClient.GetIndexMomentum(m.Uint8(), code)
+	if err != nil {
+		return nil, fmt.Errorf("index momentum query: %w", err)
+	}
+	return data, nil
+}
+
+// GetHistoryOrders fetches historical order data.
+func (c *TDXTCPClient) GetHistoryOrders(date uint32, code string, market int) (*proto.GetHistoryOrdersReply, error) {
+	var m types.Market
+	switch market {
+	case 0:
+		m = types.MarketSZ
+	case 1:
+		m = types.MarketSH
+	default:
+		return nil, fmt.Errorf("unknown market: %d", market)
+	}
+	if err := c.ensureMainConnected(); err != nil {
+		return nil, fmt.Errorf("history orders connect: %w", err)
+	}
+	data, err := c.mainClient.GetHistoryOrders(date, m.Uint8(), code)
+	if err != nil {
+		return nil, fmt.Errorf("history orders query: %w", err)
+	}
+	return data, nil
+}
+
+// ExGetQuotesList fetches extension market quotes sorted by type.
+func (c *TDXTCPClient) ExGetQuotesList(category uint8, sortType uint16, reverse bool, start uint16, count uint16) (*proto.ExGetQuotesListReply, error) {
+	if err := c.ensureExConnected(); err != nil {
+		return nil, fmt.Errorf("ex connect: %w", err)
+	}
+	data, err := c.exClient.ExGetQuotesList(category, start, count, sortType, reverse)
+	if err != nil {
+		return nil, fmt.Errorf("ex quotes list query: %w", err)
+	}
+	return data, nil
+}
+
+func (c *TDXTCPClient) GetMACCapitalFlow(code string, market int) (*proto.MACCapitalFlowReply, error) {
+	var m types.Market
+	switch market {
+	case 0:
+		m = types.MarketSZ
+	case 1:
+		m = types.MarketSH
+	default:
+		return nil, fmt.Errorf("unknown market: %d", market)
+	}
+	if err := c.ensureMACConnected(); err != nil {
+		return nil, fmt.Errorf("mac capital flow connect: %w", err)
+	}
+	data, err := c.macClient.GetMACCapitalFlow(m.Uint8(), code)
+	if err != nil && isConnError(err) {
+		if rerr := c.reconnectMAC(); rerr == nil {
+			data, err = c.macClient.GetMACCapitalFlow(m.Uint8(), code)
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("mac capital flow query: %w", err)
+	}
+	return data, nil
+}
+
+func (c *TDXTCPClient) GetQuotesList(market int, start uint16, count uint16) (*proto.GetQuotesListReply, error) {
+	if err := c.ensureMainConnected(); err != nil {
+		return nil, fmt.Errorf("quotes list connect: %w", err)
+	}
+	data, err := c.mainClient.GetQuotesList(uint8(market), start, count, 0, false, 0)
+	if err != nil {
+		return nil, fmt.Errorf("quotes list query: %w", err)
+	}
+	return data, nil
+}
+
+func (c *TDXTCPClient) GetSecurityBars(code string, market int, period int, count int) (*proto.GetSecurityBarsReply, error) {
+	var m types.Market
+	switch market {
+	case 0:
+		m = types.MarketSZ
+	case 1:
+		m = types.MarketSH
+	default:
+		return nil, fmt.Errorf("unknown market: %d", market)
+	}
+	if err := c.ensureMainConnected(); err != nil {
+		return nil, fmt.Errorf("security bars connect: %w", err)
+	}
+	c16 := uint16(200)
+	if count < 200 {
+		c16 = uint16(count)
+	}
+	data, err := c.mainClient.GetSecurityBars(uint16(period), m.Uint8(), code, 0, c16)
+	if err != nil && isConnError(err) {
+		if rerr := c.reconnectMain(); rerr == nil {
+			data, err = c.mainClient.GetSecurityBars(uint16(period), m.Uint8(), code, 0, c16)
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("security bars query: %w", err)
+	}
+	return data, nil
+}
+
+func (c *TDXTCPClient) GetSecurityBarsOffset(code string, market int, period int, start int, count int) (*proto.GetSecurityBarsOffsetReply, error) {
+	var m types.Market
+	switch market {
+	case 0:
+		m = types.MarketSZ
+	case 1:
+		m = types.MarketSH
+	default:
+		return nil, fmt.Errorf("unknown market: %d", market)
+	}
+	if err := c.ensureMainConnected(); err != nil {
+		return nil, fmt.Errorf("security bars offset connect: %w", err)
+	}
+	data, err := c.mainClient.GetSecurityBarsOffset(uint16(period), m.Uint8(), code, uint16(start), uint16(count), 0, 1)
+	if err != nil {
+		return nil, fmt.Errorf("security bars offset query: %w", err)
+	}
+	return data, nil
 }

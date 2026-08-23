@@ -1,6 +1,45 @@
 package backtest
 
-import "github.com/tdx/go-tdx-mcp/indicator"
+import (
+	"sort"
+
+	"github.com/tdx/go-tdx-mcp/indicator"
+)
+
+type SignalRankItem struct {
+	Rank           int               `json:"rank"`
+	Code           string            `json:"code"`
+	Market         int               `json:"market"`
+	Name           *string           `json:"name"`
+	Strategy       string            `json:"strategy"`
+	StrategyName   string            `json:"strategy_name"`
+	Params         map[string]float64 `json:"params"`
+	Period         string            `json:"period"`
+	BarCount       int               `json:"bar_count"`
+	TotalTrades    int               `json:"total_trades"`
+	TotalReturn    float64           `json:"total_return"`
+	AnnualReturn   float64           `json:"annual_return"`
+	MaxDrawdown    float64           `json:"max_drawdown"`
+	Sharpe         float64           `json:"sharpe"`
+	WinRate        float64           `json:"win_rate"`
+	ProfitFactor   float64           `json:"profit_factor"`
+	LastClose      *float64          `json:"last_close"`
+	LastBarDate    *string           `json:"last_bar_date"`
+	Error          *string           `json:"error"`
+}
+
+type SignalRankResult struct {
+	Strategy     string           `json:"strategy"`
+	StrategyName string           `json:"strategy_name"`
+	Params       map[string]float64 `json:"params"`
+	Period       string           `json:"period"`
+	SortBy       string           `json:"sort_by"`
+	SortReverse  bool             `json:"sort_reverse"`
+	Total        int              `json:"total"`
+	SuccessCount int              `json:"success_count"`
+	ErrorCount   int              `json:"error_count"`
+	Results      []SignalRankItem `json:"results"`
+}
 
 type ScanTarget struct {
 	Strategy      string
@@ -50,6 +89,132 @@ type SignalScanResult struct {
 }
 
 const scanCommission = 0.0003
+
+type RankInput struct {
+	Code   string
+	Market int
+	Name   *string
+	Bars   []indicator.Bar
+}
+
+func RunSignalRank(items []RankInput, strategyName string, params map[string]float64, period string) *SignalRankResult {
+	result := &SignalRankResult{
+		Strategy:     strategyName,
+		Params:       params,
+		Period:       period,
+		SortBy:       "sharpe",
+		SortReverse:  false,
+		Results:      make([]SignalRankItem, 0),
+	}
+
+	rankItems := make([]SignalRankItem, 0, len(items))
+	for _, item := range items {
+		bars := item.Bars
+		if len(bars) < 3 {
+			ri := SignalRankItem{
+				Code:    item.Code,
+				Market:  item.Market,
+				Name:    item.Name,
+				Strategy: strategyName,
+				Period:   period,
+				BarCount: len(bars),
+				Error:    strPtr("K线数据不足"),
+			}
+			rankItems = append(rankItems, ri)
+			result.ErrorCount++
+			continue
+		}
+
+		st := NewStrategyWithParams(strategyName, params)
+		if st == nil {
+			ri := SignalRankItem{
+				Code:    item.Code,
+				Market:  item.Market,
+				Name:    item.Name,
+				Strategy: strategyName,
+				Period:   period,
+				BarCount: len(bars),
+				Error:    strPtr("未知策略"),
+			}
+			rankItems = append(rankItems, ri)
+			result.ErrorCount++
+			continue
+		}
+		result.StrategyName = st.Name()
+
+		engine := NewEngine(1000000)
+		bt := engine.Run(st, bars)
+
+		ri := SignalRankItem{
+			Code:           item.Code,
+			Market:         item.Market,
+			Name:           item.Name,
+			Strategy:       strategyName,
+			Params:         params,
+			Period:         period,
+			BarCount:       bt.BarCount,
+			TotalTrades:    bt.Performance.TotalTrades,
+			TotalReturn:    bt.Performance.TotalReturn,
+			AnnualReturn:   bt.Performance.AnnualReturn,
+			MaxDrawdown:    bt.Performance.MaxDrawdown,
+			Sharpe:         bt.Performance.Sharpe,
+			WinRate:        bt.Performance.WinRate,
+			ProfitFactor:   bt.Performance.ProfitFactor,
+		}
+		if len(bars) > 0 {
+			ri.LastClose = &bars[len(bars)-1].Close
+			ri.LastBarDate = strPtr(bars[len(bars)-1].Date)
+		}
+		if bt.Performance.TotalTrades == 0 {
+			ri.Error = strPtr("无交易信号")
+			result.ErrorCount++
+		} else {
+			result.SuccessCount++
+		}
+		rankItems = append(rankItems, ri)
+	}
+
+	result.Results = rankItems
+	result.Total = len(rankItems)
+	result.SortBy = "sharpe"
+
+	sort.Slice(rankItems, func(i, j int) bool {
+		var a, b float64
+		switch result.SortBy {
+		case "sharpe":
+			a = rankItems[i].Sharpe
+			b = rankItems[j].Sharpe
+		case "total_return":
+			a = rankItems[i].TotalReturn
+			b = rankItems[j].TotalReturn
+		case "annual_return":
+			a = rankItems[i].AnnualReturn
+			b = rankItems[j].AnnualReturn
+		case "max_drawdown":
+			a = rankItems[i].MaxDrawdown
+			b = rankItems[j].MaxDrawdown
+		case "win_rate":
+			a = rankItems[i].WinRate
+			b = rankItems[j].WinRate
+		case "profit_factor":
+			a = rankItems[i].ProfitFactor
+			b = rankItems[j].ProfitFactor
+		default:
+			a = rankItems[i].Sharpe
+			b = rankItems[j].Sharpe
+		}
+		if result.SortReverse {
+			return a > b
+		}
+		return a < b
+	})
+
+	for i := range rankItems {
+		rankItems[i].Rank = i + 1
+	}
+	result.Results = rankItems
+	return result
+}
 
 func RunSignalScan(targets []ScanTarget, defaultWindow int) *SignalScanResult {
 	if defaultWindow <= 0 {
