@@ -2,7 +2,9 @@
 
 通达信金融数据 MCP 服务器，提供 A 股、港股、美股、加密货币、期货、基金等多市场金融数据服务。
 
-**215 个 MCP 工具** + **45+ 个投资技能**，覆盖实时行情、K 线、技术指标、缠论分析、量化回测、资金流向、板块分析、基金数据、宏观数据、新闻情感等全场景。混合模式下另提供约 100 个 REST API 端点与 WebSocket 实时推送。
+**215 个 MCP 工具 + 45 个投资技能 + 101 个 REST API 端点 + WebSocket 实时推送**，覆盖实时行情、K 线、技术指标、缠论分析、量化回测、资金流向、板块分析、基金数据、宏观数据、新闻情感等全场景。
+
+> 工具与技能数量、端点列表均按当前代码实测（`main.go` 注册 4 组工具、`web/server.go` 注册 101 路由）。
 
 ## 重要说明：同代码标的区分
 
@@ -78,7 +80,7 @@ go build -o go-tdx-mcp .
 |------|------|
 | `TDX_TOKEN` | 通达信 HTTP API Token，优先级高于配置文件 |
 
-> 加密货币（Binance）、基金净值、融资融券、龙虎榜、可转债、期货等数据源免费无需 Token。
+> 加密货币（Binance）、基金净值、融资融券、龙虎榜、可转债、期货、财务报表（新浪）等数据源免费无需 Token。
 
 ### 集成 Claude Desktop
 
@@ -98,73 +100,67 @@ go build -o go-tdx-mcp .
 }
 ```
 
-## 工具分类
+## MCP 工具清单（215 个）
 
-| 类别 | 数量 | 核心能力 |
-|------|------|----------|
-| Core（核心） | 6 | 实时报价、K 线、自然语言检索、智能选股、指标选择、F10 内部 API |
-| Expanded（扩展） | 64 | 分时/逐笔、板块行情、资金流、技术指标计算、缠论、回测、财务、公告、离线数据、扩展市场（港美股期货） |
-| V3（高级） | 8 | 市场概览、板块资金流、涨跌停、财务指标、宏观、舆情、网页表格爬虫、自然语言问答 |
-| New（新增） | 137 | 加密货币、基金、融资融券、龙虎榜、可转债、期货、北向资金、因子计算、选股扫描、增强回测、投资组合、缠论全套、表格解析、OCR、RAG、东财增强数据系列 |
-| **合计** | **215** | 全部工具均有对应处理器，注册成功率 100% |
+工具按 4 组注册，全部有对应处理器（`main.go` 注册时逐一校验）：
 
-### 代表性工具
+### Core 核心（6）
 
-```
-tdx_quotes            A 股实时行情（报价/五档盘口/涨跌幅）
-tdx_kline             A 股 K 线（多周期/前复权）
-tdx_kline_data        K 线数据（日/周/月/分钟）
-tdx_quote_realtime    实时报价（单只/多只）
-tdx_capital_flow      个股主力资金流向
-tdx_factor_compute    因子计算（momentum/technical/volume 等）
-tdx_factor_analyze    因子分析（IC/分层收益/多空）
-tdx_screen_scan       技术信号扫描（MACD金叉/KDJ金叉/放量等）
-tdx_enhanced_backtest 增强回测（16 策略+滑点+执行模拟）
-tdx_chanlun_merge_klines   缠论 K 线合并
-tdx_chanlun_build_bi       缠论笔构建
-tdx_chanlun_build_zhongshu 缠论中枢
-tdx_chanlun_find_maimaidian 缠论买卖点
-tdx_tecrypto_data     加密货币行情（Binance）
-tdx_tecrypto_kline    加密货币 K 线
-tdx_fund_nav          基金净值
-tdx_margin_trade      融资融券
-tdx_dragon_tiger      龙虎榜
-tdx_convertible_bond  可转债
-tdx_futures_quote     期货报价
-tdx_northbound_flow   北向资金实时净流入
-tdx_northbound_top10  北向资金十大成交
-tdx_market_overview   市场概览（涨跌家数/涨停/跌停）
-tdx_security_filter   证券筛选
-tdx_stock_basic_info  个股基本信息
-tdx_news_search       新闻搜索
-tdx_news_sentiment    新闻情感分析
-tdx_eastmoney_realtime_quote  东财实时报价
-tdx_eastmoney_capital_flow   东财资金流向
-tdx_table_parser_url  表格解析（URL/HTML→CSV/JSON）
-tdx_ocr_recognize     OCR 图像识别
-tdx_rag_query         RAG 智能问答
-wenda_macro_query     自然语言宏观/策略问答
-tdx_macro_data        宏观经济数据（CPI/GDP/PMI/M2）
-```
+`tdx_quotes`、`tdx_kline`、`tdx_lookup_stock`、`tdx_screener`、`tdx_indicator_select`、`tdx_api_data`
 
-## REST API
+### Expanded 扩展（64）
 
-混合模式下约 100 个端点，位于 `/api/v1/` 路径下，均与 MCP 工具对应。
+分时/逐笔、板块行情、资金流、技术指标计算、缠论、回测、财务、公告、离线数据、扩展市场（港美股/期货）：
+
+`tdx_tick`、`tdx_transaction`、`tdx_board_list`、`tdx_board_members`、`tdx_belong_board`、`tdx_board_ranking`、`tdx_capital_flow`、`tdx_auction`、`tdx_unusual`、`tdx_market_stat`、`tdx_server_info`、`tdx_symbol_info`、`tdx_announcement`、`tdx_financial`、`tdx_indicator_compute`、`tdx_chanlun_analyze`、`tdx_backtest`、`tdx_ex_markets`、`tdx_ex_kline`、`tdx_ex_quote`、`tdx_ex_quote_list`、`tdx_ex_tick`、`tdx_offline_home`、`tdx_offline_daily`、`tdx_offline_min`、`tdx_offline_gbbq`、`tdx_offline_blocks`、`tdx_offline_ex_files`、`tdx_offline_ex_daily`、`tdx_offline_financial`、`tdx_offline_sync_daily`、`tdx_offline_sync_all`、`tdx_quote_realtime`、`tdx_quote_list_extended`、`tdx_kline_extended`、`tdx_daily_line_extended`、`tdx_week_line_extended`、`tdx_month_line_extended`、`tdx_5min_line_extended`、`tdx_15min_line_extended`、`tdx_30min_line_extended`、`tdx_60min_line_extended`、`tdx_macd_calc`、`tdx_kdj_calc`、`tdx_rsi_calc`、`tdx_wr_calc`、`tdx_boll_calc`、`tdx_ema_calc`、`tdx_dma_calc`、`tdx_asi_calc`、`tdx_vr_calc`、`tdx_roc_calc`、`tdx_obv_calc`、`tdx_mfi_calc`、`tdx_adx_calc`、`tdx_arbr_calc`、`tdx_cci_calc`、`tdx_dmi_calc`、`tdx_technical_indicator`、`tdx_stock_profile`、`tdx_sector_ranking`、`tdx_industry_ranking`、`tdx_top_gainers`、`tdx_top_losers`
+
+### V3 高级（8）
+
+市场概览、板块资金流、涨跌停、财务指标、宏观、舆情、网页表格爬虫、自然语言问答：
+
+`tdx_market_overview`、`tdx_sector_flow`、`tdx_top_gainers_losers`、`tdx_financial_metrics`、`tdx_macro_data`、`wenda_macro_query`、`tdx_news_sentiment`、`tdx_table_scraper`
+
+### New 新增（137）
+
+加密货币、基金、融资融券、龙虎榜、可转债、期货、北向资金、因子计算、选股扫描、增强回测、投资组合、缠论全套、表格解析、OCR、RAG、东财增强数据系列：
+
+`tdx_factor_list`、`tdx_factor_compute`、`tdx_factor_analyze`、`tdx_screen_scan`、`tdx_screen_strength`、`tdx_enhanced_backtest`、`tdx_tecrypto_kline`、`tdx_fund_nav`、`tdx_margin_trade`、`tdx_dragon_tiger`、`tdx_convertible_bond`、`tdx_futures_quote`、`tdx_stock_code_resolve`、`tdx_csi_index_constituents`、`tdx_news_search`、`tdx_current_timestamp`、`tdx_tecrypto_data`、`tdx_tefund_data`、`tdx_tefutures_data`、`tdx_temacro_data`、`tdx_sina_quotes`、`tdx_sina_hk_quotes`、`tdx_sina_us_quotes`、`tdx_fund_holding`、`tdx_fund_managers`、`tdx_fund_search`、`tdx_hkus_financial`、`tdx_hkus_quote`、`tdx_hkus_basic_info`、`tdx_hkus_search_stocks`、`tdx_block_trades`、`tdx_block_trades_by_stock`、`tdx_block_trade_stats`、`tdx_block_active_stocks`、`tdx_sector_boards`、`tdx_sector_board_stocks`、`tdx_macro_data_web`、`tdx_northbound_flow`、`tdx_northbound_daily`、`tdx_northbound_stocks`、`tdx_northbound_holders`、`tdx_fund_nav_web`、`tdx_fund_nav_history`、`tdx_margin_trade_web`、`tdx_limit_up_pool`、`tdx_limit_down_pool`、`tdx_yesterday_limit_up`、`tdx_hot_rank`、`tdx_northbound_top10`、`tdx_market_indices`、`tdx_market_indices_full`、`tdx_security_list`、`tdx_security_count`、`tdx_block_trades_by_date`、`tdx_block_trades_search`、`tdx_fund_companies`、`tdx_macro_money_supply`、`tdx_macro_global`、`tdx_sina_margin_trade`、`tdx_sina_block_trades`、`tdx_stock_belong_sector`、`tdx_factor_transform`、`tdx_factor_cross_section`、`tdx_chanlun_detail`、`tdx_indicator_single`、`tdx_backtest_performance`、`tdx_portfolio_optimize`、`tdx_portfolio_risk`、`tdx_ocr_recognize`、`tdx_eastmoney_realtime_quote`、`tdx_eastmoney_kline_history`、`tdx_eastmoney_stock_changes`、`tdx_eastmoney_symbol_info`、`tdx_eastmoney_sector_boards`、`tdx_eastmoney_sector_stocks`、`tdx_eastmoney_updown_count`、`tdx_eastmoney_belong_board`、`tdx_eastmoney_company_profile`、`tdx_eastmoney_financial_data`、`tdx_eastmoney_capital_flow`、`tdx_fund_nav_latest`、`tdx_fund_nav_history_new`、`tdx_margin_trade_summary`、`tdx_table_parser_url`、`tdx_table_parser_html`、`tdx_table_parser_find_keyword`、`tdx_table_parser_to_csv`、`tdx_table_parser_to_json`、`tdx_scraper_iwencai`、`tdx_scraper_multi_source`、`tdx_backtest_available_strategies`、`tdx_backtest_run`、`tdx_backtest_combo`、`tdx_factor_get_info`、`tdx_factor_analysis_report`、`tdx_factor_forward_returns`、`tdx_chanlun_merge_klines`、`tdx_chanlun_find_fenxing`、`tdx_chanlun_build_bi`、`tdx_chanlun_build_zhongshu`、`tdx_chanlun_find_maimaidian`、`tdx_rag_query`、`tdx_quote_list`、`tdx_quote_batch`、`tdx_kline_data`、`tdx_fs_minute_data`、`tdx_transaction_data`、`tdx_security_filter`、`tdx_stock_basic_info`、`tdx_stock_dividend_info`、`tdx_stock_split_info`、`tdx_ipo_calendar`、`tdx_stock_list_by_market`、`tdx_stock_list_by_sector`、`tdx_stock_list_by_industry`、`tdx_stock_list_by_exchange`、`tdx_stock_list_by_status`、`tdx_index_constituent_list`、`tdx_etf_list`、`tdx_etf_info`、`tdx_etf_holdings`、`tdx_etf_net_value`、`tdx_fundamental_filter`、`tdx_pe_percentile`、`tdx_pb_percentile`、`tdx_revenue_growth_rank`、`tdx_profit_growth_rank`、`tdx_roe_rank`、`tdx_debt_ratio_rank`、`tdx_insider_trading`、`tdx_shareholder_change`、`tdx_margin_detail`、`tdx_northbound_detail`、`tdx_block_trade_detail`、`tdx_sector_rotation`、`tdx_market_breadth`、`tdx_volume_price_analysis`
+
+## 投资技能（45 个 MCP Prompts）
+
+通过 `prompts/list` 获取，每个技能附带完整分析方法论 Markdown：
+
+`tdx-agzxsb`、`tdx-bkbj`、`tdx-board-cpbd`、`tdx-board-valuation`、`tdx-bxzjxw`、`tdx-chltz`、`tdx-company-info`、`tdx-czzdxfxjs`、`tdx-dividend-financing`、`tdx-dragon-tiger`、`tdx-earnings-warning`、`tdx-event-driven-short-term-catalyst`、`tdx-fhgdhb`、`tdx-financials`、`tdx-fsxypmsb`、`tdx-ggtzljyj`、`tdx-ggwdzk`、`tdx-ggycbfx`、`tdx-gszddf`、`tdx-hot-topic`、`tdx-industry-chain`、`tdx-industry-chain-mapping`、`tdx-jgccgdfx`、`tdx-jjzcyjd`、`tdx-lhbxwfg`、`tdx-main-position`、`tdx-mrtyjb`、`tdx-position-decision`、`tdx-quant-local`、`tdx-quant-python`、`tdx-report-rating`、`tdx-share-capital`、`tdx-shareholder-research`、`tdx-stock-events`、`tdx-tczqcxx`、`tdx-trade-plan`、`tdx-trading-info`、`tdx-valuation-pricing-framework`、`tdx-wxd-a`、`tdx-wxd-bk`、`tdx-wxd-etf`、`tdx-wxd-jj`、`tdx-yjygby`、`tdx-zjftjytl`、`tdx-ztltby`
+
+## REST API（101 个端点）
+
+混合模式下全部端点位于 `/api/v1/` 路径下，均与 MCP 工具对应。
+
+### 系统
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/` | GET | API 文档首页 |
+| `/api/v1/health` | GET | 健康检查 |
+| `/api/v1/server-info` | GET | 服务器信息 |
+| `/api/v1/server/hosts` | GET | 服务器主机列表 |
+| `/api/v1/server/switch` | GET | 切换服务器 |
+| `/api/v1/server/test` | GET | 服务器连通测试（白名单 host） |
 
 ### 行情与 K 线
 
 | 端点 | 方法 | 参数 | 说明 |
 |------|------|------|------|
 | `/api/v1/quotes` | GET | `codes` | 实时报价（多代码） |
-| `/api/v1/bars` | GET | `code`, `market`, `period`, `count` | K 线数据 |
-| `/api/v1/bars/index` | GET | `code`, `market`, `period`, `count` | 指数 K 线 |
-| `/api/v1/symbol-info` | GET | `code`, `market` | 标的基本信息 |
 | `/api/v1/quote-list` | GET | `count`, `sort_type` | 行情列表 |
+| `/api/v1/symbol-info` | GET | `code`, `market` | 标的基本信息 |
 | `/api/v1/market-stat` | GET | - | 市场统计 |
 | `/api/v1/market-overview` | GET | - | 市场概览 |
 | `/api/v1/market/strength` | GET | - | 市场强度 |
-| `/api/v1/minute`、`/api/v1/minute/history`、`/api/v1/minute/multi` | GET | `code`, `market` | 分时数据 |
-| `/api/v1/transaction`、`/api/v1/transaction/history` | GET | `code`, `market` | 逐笔成交 |
+| `/api/v1/bars` | GET | `code`, `market`, `period`, `count` | K 线数据 |
+| `/api/v1/bars/index` | GET | `code`, `market`, `period`, `count` | 指数 K 线 |
+| `/api/v1/minute`、`/minute/history`、`/minute/multi` | GET | `code`, `market` | 分时数据 |
+| `/api/v1/transaction`、`/transaction/history` | GET | `code`, `market` | 逐笔成交 |
 
 ### 技术指标与因子
 
@@ -182,20 +178,20 @@ tdx_macro_data        宏观经济数据（CPI/GDP/PMI/M2）
 
 | 端点 | 说明 |
 |------|------|
-| `/api/v1/chanlun/analyze`、`/api/v1/chanlun/multi` | 缠论分析（分型/笔/中枢/买卖点） |
-| `/api/v1/backtest/run`、`/run/async`、`/run-all` | 回测执行 |
-| `/api/v1/backtest/tasks`、`/tasks/{id}` | 回测任务状态 |
-| `/api/v1/backtest/optimize`、`/portfolio`、`/multi-strategy` | 组合回测 |
-| `/api/v1/backtest/signal-scan`、`/signal-rank` | 信号扫描/排名 |
-| `/api/v1/backtest/strategies`、`/api/v1/strategies` | 策略管理（SQLite 存储） |
+| `/api/v1/chanlun/analyze`、`/chanlun/multi` | 缠论分析（分型/笔/中枢/买卖点） |
+| `/api/v1/backtest/run`、`/backtest/run/async`、`/backtest/run-all` | 回测执行 |
+| `/api/v1/backtest/tasks`、`/backtest/tasks/{id}` | 回测任务状态 |
+| `/api/v1/backtest/optimize`、`/backtest/portfolio`、`/backtest/multi-strategy` | 组合回测 |
+| `/api/v1/backtest/signal-scan`、`/backtest/signal-rank` | 信号扫描/排名 |
+| `/api/v1/backtest/strategies`、`/api/v1/strategies`、`/strategies/{id}` | 策略管理（SQLite 存储） |
 
 ### 财务与公告
 
 | 端点 | 说明 |
 |------|------|
-| `/api/v1/financial/report`、`/file-list`、`/records`、`/api/v1/finance` | 财务报表与文件 |
+| `/api/v1/financial/report`、`/financial/file-list`、`/financial/records`、`/api/v1/finance` | 财务报表与文件 |
 | `/api/v1/announcements` | 公告列表 |
-| `/api/v1/company/category`、`/content` | 公司资料 |
+| `/api/v1/company/category`、`/company/content` | 公司资料 |
 
 ### 资金与板块
 
@@ -204,7 +200,7 @@ tdx_macro_data        宏观经济数据（CPI/GDP/PMI/M2）
 | `/api/v1/capital-flow`、`/fund-flow`、`/fund-flow/history` | 资金流向 |
 | `/api/v1/auction` | 集合竞价 |
 | `/api/v1/unusual` | 异动监控 |
-| `/api/v1/board/list`、`/members`、`/ranking`、`/change-ranking`、`/summary` | 板块数据 |
+| `/api/v1/board/list`、`/board/members`、`/board/ranking`、`/board/change-ranking`、`/board/summary` | 板块数据 |
 | `/api/v1/belong-board`、`/block` | 个股板块归属/板块文件 |
 
 ### 扩展市场（港美股/期货）
@@ -212,11 +208,11 @@ tdx_macro_data        宏观经济数据（CPI/GDP/PMI/M2）
 | 端点 | 说明 |
 |------|------|
 | `/api/v1/ex/markets` | 扩展市场列表 |
-| `/api/v1/ex/quote`、`/quotes`、`/quotes-list` | 扩展市场报价 |
-| `/api/v1/ex/bars`、`/minute`、`/transaction`、`/transaction-all`、`/chart-sampling` | 扩展市场 K 线/分时 |
+| `/api/v1/ex/quote`、`/ex/quotes`、`/ex/quotes-list` | 扩展市场报价 |
 | `/api/v1/ex/list` | 扩展市场标的列表 |
+| `/api/v1/ex/bars`、`/ex/minute`、`/ex/transaction`、`/ex/transaction-all`、`/ex/chart-sampling` | 扩展市场 K 线/分时 |
 
-### 爬虫与宏观数据
+### 爬虫与数据
 
 | 端点 | 说明 |
 |------|------|
@@ -226,20 +222,20 @@ tdx_macro_data        宏观经济数据（CPI/GDP/PMI/M2）
 | `/api/v1/scraper/fund-nav`、`/fund-holding`、`/fund-search` | 基金数据 |
 | `/api/v1/scraper/margin-trade` | 融资融券 |
 | `/api/v1/scraper/hkus-quote`、`/crypto` | 港美股/加密货币 |
-| `/api/v1/dragon-tiger` | 龙虎榜 |
-| `/api/v1/convertible-bond` | 可转债列表 |
+| `/api/v1/dragon-tiger` | 龙虎榜（东方财富 datacenter） |
+| `/api/v1/convertible-bond` | 可转债列表（东方财富 datacenter） |
 | `/api/v1/futures-quote` | 期货行情（新浪） |
-| `/api/v1/macro-data`、`/api/v1/news-sentiment` | 宏观/舆情 |
+| `/api/v1/macro-data`、`/news-sentiment` | 宏观/舆情 |
 
 ### 离线数据（依赖本地通达信数据）
 
 | 端点 | 说明 |
 |------|------|
 | `/api/v1/offline/home` | 检测 TDX 数据目录 |
-| `/api/v1/offline/daily`、`/min` | 日线/分钟线 |
+| `/api/v1/offline/daily`、`/offline/min` | 日线/分钟线 |
 | `/api/v1/offline/gbbq` | 股本变迁 |
 | `/api/v1/offline/blocks` | 板块文件（白名单 4 个文件名） |
-| `/api/v1/offline/ex-files`、`/ex-daily` | 扩展市场离线数据 |
+| `/api/v1/offline/ex-files`、`/offline/ex-daily` | 扩展市场离线数据 |
 
 > 离线端点依赖本地通达信客户端数据（`vipdoc` 目录），无 TDX 安装时返回 404。
 
@@ -247,9 +243,9 @@ tdx_macro_data        宏观经济数据（CPI/GDP/PMI/M2）
 
 | 端点 | 说明 |
 |------|------|
-| `/api/v1/security/list`、`/list-all`、`/security-count` | 证券列表/数量 |
-| `/api/v1/xdxr`、`/history-orders`、`/index/info`、`/index/momentum` | 除权除息/历史/指数 |
-| `/api/v1/server/hosts`、`/test`、`/switch`、`/server-info` | 服务器管理（`/test` 为白名单模式） |
+| `/api/v1/security/list`、`/security/list-all`、`/security-count` | 证券列表/数量 |
+| `/api/v1/xdxr`、`/history-orders` | 除权除息/历史委托 |
+| `/api/v1/index/info`、`/index/momentum` | 指数信息/动量 |
 
 ### WebSocket 实时推送
 
@@ -272,24 +268,26 @@ tdx_macro_data        宏观经济数据（CPI/GDP/PMI/M2）
 | **TDX HTTP (TQLEX)** | 通达信 HTTP 网关（tdxhub.icfqs.com:7615，行情、K 线、基础数据） | 是 |
 | **东方财富 (push2delay)** | 实时行情、板块、资金流（延迟数据） | 否 |
 | **东方财富 (datacenter)** | 财务、宏观、龙虎榜、可转债、北向、涨跌停、大宗交易 | 否 |
-| **新浪财经** | A 股/港股/美股行情、财务报表、期货行情、融资融券、大宗交易 | 否 |
+| **新浪财经** | A 股/港股/美股行情、财务报表、期货行情（hq.sinajs.cn）、融资融券、大宗交易 | 否 |
 | **腾讯证券** | 融资融券 | 否 |
 | **Binance API** | 加密货币行情与 K 线 | 否 |
 | **CoinGecko API** | 加密货币数据备用源 | 否 |
 | **巨潮资讯网** | 公司公告 | 否 |
 | **天天基金网** | 基金净值/持仓 | 否 |
 | **同花顺问财 (iwencai)** | 自然语言选股/板块/资讯 | 否 |
+| **TradingEconomics** | 全球宏观数据备用源 | 否 |
 | **本地 TDX 数据** | vipdoc 目录下的日线/分钟线/板块文件 | 否 |
 
 > 注意：`push2his.eastmoney.com` 已被阻断不可用，历史 K 线通过 TDX 数据源获取。
 
 ## 技术栈
 
-- **语言**：Go 1.26+
+- **语言**：Go 1.26（`go.mod` 声明 1.26.0）
 - **MCP 协议**：mark3labs/mcp-go
 - **HTTP/WebSocket**：gorilla/websocket + 标准库 net/http
-- **TDX 协议**：通达信二进制协议（TCP 直连）+ HTTP TQLEX 网关
-- **爬虫**：net/http、goquery
+- **TDX 协议**：bensema/gotdx（TCP 直连）+ HTTP TQLEX 网关
+- **爬虫**：net/http、PuerkitoBio/goquery
+- **OCR**：chromedp（无头浏览器截图识别）
 - **计算引擎**：自研因子计算、缠论分析、量化回测、投资组合优化引擎
 - **存储**：SQLite（策略持久化）
 
@@ -297,18 +295,20 @@ tdx_macro_data        宏观经济数据（CPI/GDP/PMI/M2）
 
 ```
 go-tdx-mcp/
-├── main.go               # 入口：MCP/Web/SSE/Streamable 多模式
+├── main.go               # 入口：MCP/Web/SSE/Streamable 多模式，注册 4 组工具
 ├── config.example.json   # 配置示例
 ├── test_all_api.py       # 功能测试脚本
-├── web/
-│   ├── server.go         # Web API + WebSocket 服务器（约 100 路由）
+├── web/                  # Web API + WebSocket 服务器（101 路由）
+│   ├── server.go         # 路由注册与处理器
 │   ├── handlers_new.go   # 扩展端点处理器
 │   ├── handlers_missing.go
 │   ├── strategy_store.go # 策略 SQLite 存储
 │   └── server_test.go    # 回归测试
-├── tdx/
+├── tdx/                  # 核心库与 MCP 工具定义
 │   ├── client.go         # HTTP TQLEX 客户端
 │   ├── tcp_client.go     # TDX TCP 客户端（K 线获取/自动重连）
+│   ├── async_client.go   # 异步客户端
+│   ├── health.go         # 服务器健康检测
 │   ├── unified_client.go # 统一客户端（TCP + HTTP 智能路由）
 │   ├── unified_bridge.go # 桥接层（TCP ↔ HTTP 格式转换）
 │   ├── collector.go      # 多主机数据采集器
@@ -316,15 +316,17 @@ go-tdx-mcp/
 │   ├── tools_expanded.go # 扩展工具集（64 个）
 │   ├── tools_v3.go       # V3 工具集（8 个）
 │   ├── tools_new.go      # 新增工具集（137 个）
+│   ├── skills.go         # 投资技能（45 个）
+│   ├── skills_data_01/02/03.go  # 技能 Markdown 内容
 │   ├── strategies.go     # 量化策略定义
 │   └── types.go          # 请求/响应类型定义
 ├── indicator/            # 技术指标计算引擎（30+ 指标）
 ├── factor/               # 因子计算引擎
 ├── backtest/             # 量化回测引擎
 ├── chanlun/              # 缠论分析引擎（分型/笔/中枢/买卖点）
-├── finance/              # 财务报表解析
+├── finance/              # 财务报表解析（新浪源，GBK→UTF8）
 ├── offline/              # 离线数据读写（TDX vipdoc）
-├── scraper/              # 网页数据爬虫（东方财富/新浪/腾讯/同花顺）
+├── scraper/              # 网页数据爬虫（东方财富/新浪/腾讯/同花顺/巨潮/天天基金）
 ├── portfolio/            # 投资组合优化与风险
 ├── screen/               # 选股扫描引擎
 ├── vipdoc/               # 本地 TDX 数据目录（可选，运行时生成）
@@ -345,12 +347,13 @@ go vet ./...
 python3 test_all_api.py
 ```
 
-单元测试覆盖 tdx/indicator/factor/backtest/chanlun/finance/scraper/web 等包，共 167 个测试函数。
+单元测试共 **167 个测试函数**，分布：`tdx`（tools_expanded_test 63 / tools_new_test 53 / strategies_test 12 / listitem_parse_test 5 等）、`scraper`（eastmoney_enhanced 10 / antiban 4 / utils 3）、`indicator`（9）、`web`（server_test 4）。
 
 ## Changelog
 
 ### v1.0.6（2026-08-25）
 - 版本发布：main.go 版本号从 1.0.5 更新至 1.0.6，重新构建二进制
+- 文档重写：README 按实际代码重写，工具清单（215）、技能（45）、REST 端点（101）全部实测核对
 
 ### v1.0.5（2026-08-24）
 - 修复财务报表字段名 GBK 乱码：引入 golang.org/x/text/encoding/simplifiedchinese 真正 GBK→UTF8 转码
@@ -396,7 +399,7 @@ python3 test_all_api.py
 - 修复多个 K 线解析函数缺 HTTP 格式支持
 
 ### v1.0.0
-- 初始版本：215 个 MCP 工具 + 45+ 个投资技能
+- 初始版本：215 个 MCP 工具 + 45 个投资技能
 - 支持 Stdio / SSE / Streamable HTTP / Web 混合模式
 - 覆盖 A 股、港股、美股、加密货币、期货、基金全市场数据
 
