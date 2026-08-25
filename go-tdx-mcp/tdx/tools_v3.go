@@ -304,25 +304,49 @@ func HandleFinancialMetrics(ctx context.Context, client Client, request mcp.Call
 		metricsFilter = v
 	}
 
-	report, err := finance.FetchReport(code, "lrb")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("获取财务数据失败: %v", err)), nil
+	types := []string{"lrb", "zcfzb", "xjllb"}
+	merged := make(map[string]map[string]float64)
+	var dateOrder []string
+	var succeeded []string
+	for _, rt := range types {
+		rep, err := finance.FetchReport(code, rt)
+		if err != nil || len(rep.Periods) == 0 {
+			continue
+		}
+		succeeded = append(succeeded, rt)
+		for _, p := range rep.Periods {
+			if _, ok := merged[p.Date]; !ok {
+				merged[p.Date] = make(map[string]float64)
+				dateOrder = append(dateOrder, p.Date)
+			}
+			for k, v := range p.Items {
+				merged[p.Date][k] = v
+			}
+		}
+	}
+	if len(succeeded) == 0 {
+		return mcp.NewToolResultError("获取财务数据失败: 三表（利润/资产负债/现金流量）均无数据"), nil
 	}
 
-	if len(report.Periods) > periods {
-		report.Periods = report.Periods[:periods]
+	if len(dateOrder) > periods {
+		dateOrder = dateOrder[:periods]
+	}
+	var data []finance.ReportPeriod
+	for _, d := range dateOrder {
+		data = append(data, finance.ReportPeriod{Date: d, Items: merged[d]})
 	}
 
 	type metricsOutput struct {
-		Code       string                 `json:"code"`
-		PeriodCount int                   `json:"period_count"`
-		Summary    map[string]interface{} `json:"summary"`
-		Data       []finance.ReportPeriod `json:"data"`
+		Code        string                 `json:"code"`
+		PeriodCount int                    `json:"period_count"`
+		Sources     []string               `json:"sources"`
+		Summary     map[string]interface{} `json:"summary"`
+		Data        []finance.ReportPeriod `json:"data"`
 	}
 
 	summary := make(map[string]interface{})
-	if len(report.Periods) > 0 {
-		latest := report.Periods[0]
+	if len(data) > 0 {
+		latest := data[0]
 		summary["date"] = latest.Date
 		if metricsFilter == "" {
 			summary["items"] = latest.Items
@@ -340,9 +364,10 @@ func HandleFinancialMetrics(ctx context.Context, client Client, request mcp.Call
 
 	output := metricsOutput{
 		Code:        code,
-		PeriodCount: len(report.Periods),
+		PeriodCount: len(data),
+		Sources:     succeeded,
 		Summary:     summary,
-		Data:        report.Periods,
+		Data:        data,
 	}
 	return mcp.NewToolResultText(toJSON(output)), nil
 }

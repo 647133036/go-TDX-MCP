@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 // FundData represents basic fund information.
@@ -117,8 +120,12 @@ func NewFuturesClient() *FuturesClient {
 }
 
 func (c *FuturesClient) GetQuote(symbol string) (*FuturesData, error) {
-	url := fmt.Sprintf("https://qt.gtimg.cn/q=%s", symbol)
-	resp, err := c.client.Get(url)
+	req, err := http.NewRequest("GET", "https://hq.sinajs.cn/list="+url.QueryEscape(symbol), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Referer", "https://finance.sina.com.cn")
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -129,29 +136,47 @@ func (c *FuturesClient) GetQuote(symbol string) (*FuturesData, error) {
 		return nil, err
 	}
 
-	data := string(body)
-	if !strings.Contains(data, "~") {
+	text := string(body)
+	start := strings.Index(text, "\"")
+	end := strings.LastIndex(text, "\"")
+	if start < 0 || end <= start {
 		return nil, fmt.Errorf("no futures data for %s", symbol)
 	}
-
-	parts := strings.Split(data, "~")
-	if len(parts) < 50 {
-		return nil, fmt.Errorf("invalid futures data format")
+	parts := strings.Split(text[start+1:end], ",")
+	if len(parts) < 15 {
+		return nil, fmt.Errorf("invalid futures data format for %s", symbol)
 	}
+
+	nameBytes, _ := simplifiedchinese.GBK.NewDecoder().Bytes([]byte(parts[0]))
+
+	var preClose, last, open, high, low, vol, oi float64
+	fmt.Sscanf(parts[2], "%f", &preClose)
+	fmt.Sscanf(parts[8], "%f", &last)
+	fmt.Sscanf(parts[3], "%f", &open)
+	fmt.Sscanf(parts[4], "%f", &high)
+	fmt.Sscanf(parts[5], "%f", &low)
+	fmt.Sscanf(parts[14], "%f", &vol)
+	fmt.Sscanf(parts[13], "%f", &oi)
 
 	fd := &FuturesData{
-		Symbol:   parts[2],
-		Exchange: parts[1],
+		Symbol:       symbol,
+		Exchange:     string(nameBytes),
+		LastPrice:    last,
+		Open:         open,
+		High:         high,
+		Low:          low,
+		Volume:       vol,
+		OpenInterest: oi,
 	}
-
-	fmt.Sscanf(parts[5], "%f", &fd.LastPrice)
-	fmt.Sscanf(parts[31], "%f", &fd.Open)
-	fmt.Sscanf(parts[33], "%f", &fd.High)
-	fmt.Sscanf(parts[34], "%f", &fd.Low)
-	fmt.Sscanf(parts[32], "%f", &fd.Volume)
-	fmt.Sscanf(parts[14], "%f", &fd.Change)
-	if fd.LastPrice > 0 && fd.Change != 0 {
-		fd.ChangePct = fd.Change / fd.LastPrice * 100
+	if last > 0 && preClose > 0 {
+		fd.Change = last - preClose
+		fd.ChangePct = fd.Change / preClose * 100
+	}
+	if fd.High > 0 && fd.High < fd.LastPrice {
+		fd.High = fd.LastPrice
+	}
+	if fd.Low > 0 && fd.Low > fd.LastPrice {
+		fd.Low = fd.LastPrice
 	}
 
 	return fd, nil
@@ -245,6 +270,70 @@ type MarginTradeData struct {
 	Rzmre     float64 `json:"rzmre"`
 }
 
+// fetchDatacenter fetches rows from the EastMoney datacenter JSON API.
+func fetchDatacenter(c *http.Client, reportName, columns, sortColumns string, pageSize int) ([]map[string]interface{}, error) {
+	params := url.Values{}
+	params.Set("sortColumns", sortColumns)
+	params.Set("sortTypes", "-1")
+	params.Set("pageSize", fmt.Sprintf("%d", pageSize))
+	params.Set("pageNumber", "1")
+	params.Set("reportName", reportName)
+	params.Set("columns", columns)
+	params.Set("source", "WEB")
+	params.Set("client", "WEB")
+
+	fullURL := macroDataURL + "?" + params.Encode()
+	req, err := http.NewRequest("GET", fullURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	req.Header.Set("Referer", "https://data.eastmoney.com/")
+
+	resp, err := c.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var mr macroResponse
+	if err := json.Unmarshal(body, &mr); err != nil {
+		return nil, fmt.Errorf("parse datacenter response: %w", err)
+	}
+	if !mr.Success {
+		return nil, fmt.Errorf("datacenter API failed for %s", reportName)
+	}
+	return mr.Result.Data, nil
+}
+
+func mapStr(m map[string]interface{}, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			if s := strings.TrimSpace(fmt.Sprintf("%v", v)); s != "" && s != "<nil>" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+func mapFloat(m map[string]interface{}, keys ...string) float64 {
+	for _, k := range keys {
+		if v, ok := m[k]; ok && v != nil {
+			var f float64
+			if n, _ := fmt.Sscanf(fmt.Sprintf("%v", v), "%f", &f); n == 1 {
+				return f
+			}
+		}
+	}
+	return 0
+}
+
 // DragonTigerClient fetches dragon tiger list from EastMoney.
 type DragonTigerClient struct {
 	client *http.Client
@@ -262,66 +351,21 @@ func (c *DragonTigerClient) GetLatest(limit int) ([]*DragonTigerData, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
-	url := fmt.Sprintf("https://data.eastmoney.com/dsbj/detail/%d.html", limit)
-	resp, err := c.client.Get(url)
+	data, err := fetchDatacenter(c.client, "RPT_BILLBOARD_LIST", "ALL", "TRADE_DATE", limit)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("获取龙虎榜失败: %w", err)
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	html := string(body)
-	var results []*DragonTigerData
-	if len(html) < 100 {
-		return results, nil
-	}
-
-	type DTEntry struct {
-		StockCode string
-		StockName string
-	}
-
-	var entries []DTEntry
-	parts := strings.Split(html, "<tr>")
-	for _, part := range parts {
-		if !strings.Contains(part, "class=\"td\"") {
-			continue
-		}
-		codeStart := strings.Index(part, "href=\"*/")
-		if codeStart == -1 {
-			continue
-		}
-		codeStart += len("href=\"*/")
-		codeEnd := strings.Index(part[codeStart:], "\"")
-		if codeEnd == -1 {
-			continue
-		}
-		code := part[codeStart : codeStart+codeEnd]
-
-		nameStart := strings.Index(part, ">")
-		if nameStart == -1 {
-			continue
-		}
-		nameEnd := strings.Index(part[nameStart:], "<")
-		if nameEnd == -1 {
-			continue
-		}
-		name := strings.TrimSpace(part[nameStart+1 : nameStart+nameEnd])
-
-		entries = append(entries, DTEntry{
-			StockCode: code,
-			StockName: name,
-		})
-	}
-
-	for _, e := range entries {
+	results := make([]*DragonTigerData, 0, len(data))
+	for _, d := range data {
+		buy := mapFloat(d, "TOTAL_BUY_AMT")
+		sell := mapFloat(d, "TOTAL_SELL_AMT")
 		results = append(results, &DragonTigerData{
-			StockCode: e.StockCode,
-			StockName: e.StockName,
+			StockCode: mapStr(d, "SECURITY_CODE", "SECUCODE"),
+			StockName: mapStr(d, "SECURITY_NAME_ABBR", "SECURITY_NAME"),
+			TradeDate: mapStr(d, "TRADE_DATE", "REPORT_DATE"),
+			Reason:    mapStr(d, "BOARD_TYPE", "EXPLAIN", "REASON"),
+			Turnover:  buy,
+			NetBuy:    buy - sell,
 		})
 	}
 	return results, nil
@@ -351,64 +395,30 @@ func NewConvertibleBondClient() *ConvertibleBondClient {
 }
 
 func (c *ConvertibleBondClient) GetAll() ([]*ConvertibleBond, error) {
-	url := "https://data.eastmoney.com/hykb/overview.html"
-	resp, err := c.client.Get(url)
+	data, err := fetchDatacenter(c.client, "RPT_BOND_CB_LIST", "ALL", "PUBLIC_START_DATE", 200)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("获取可转债失败: %w", err)
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	html := string(body)
-	var results []*ConvertibleBond
-
-	type CBEntry struct {
-		BondCode  string
-		BondName  string
-		StockCode string
-		StockName string
-	}
-
-	parts := strings.Split(html, "tbody")
-	for _, part := range parts {
-		if !strings.Contains(part, "<tr") {
+	results := make([]*ConvertibleBond, 0, len(data))
+	for _, d := range data {
+		bondCode := mapStr(d, "SECURITY_CODE", "BOND_CODE", "SECUCODE")
+		if bondCode == "" {
 			continue
 		}
-		rows := strings.Split(part, "<tr")
-		for _, row := range rows[1:] {
-			if !strings.Contains(row, "<td") {
-				continue
-			}
-			cells := strings.Split(row, "<td")
-			if len(cells) < 4 {
-				continue
-			}
-			clean := func(s string) string {
-				s = strings.ReplaceAll(s, "</td>", "")
-				s = strings.ReplaceAll(s, "<!--", "")
-				s = strings.ReplaceAll(s, "-->", "")
-				s = strings.TrimSpace(s)
-				s = strings.ReplaceAll(s, "<[^>]*>", "")
-				return s
-			}
-			entry := CBEntry{
-				BondCode:  clean(cells[1]),
-				BondName:  clean(cells[2]),
-				StockCode: clean(cells[3]),
-			}
-			if entry.StockCode == "" || len(entry.StockCode) < 4 {
-				continue
-			}
-			results = append(results, &ConvertibleBond{
-				BondCode:  entry.BondCode,
-				BondName:  entry.BondName,
-				StockCode: entry.StockCode,
-			})
-		}
+		results = append(results, &ConvertibleBond{
+			BondCode:     bondCode,
+			BondName:     mapStr(d, "SECURITY_NAME_ABBR", "SECURITY_SHORT_NAME", "BOND_NAME"),
+			StockCode:    mapStr(d, "CONVERT_STOCK_CODE", "STOCK_CODE"),
+			StockName:    mapStr(d, "CORRECODE_NAME_ABBR", "STOCK_NAME"),
+			IssuePrice:   mapFloat(d, "ISSUE_PRICE"),
+			IssueAmount:  mapFloat(d, "ACTUAL_ISSUE_SCALE", "ISSUE_SCALE", "ISSUE_AMOUNT"),
+			IssueDate:    mapStr(d, "VALUE_DATE", "PUBLIC_START_DATE", "ISSUE_DATE"),
+			MaturityDate: mapStr(d, "EXPIRE_DATE", "CEASE_DATE", "MATURITY_DATE"),
+			Rating:       mapStr(d, "RATING"),
+			CouponRate0:  mapFloat(d, "COUPON_IR", "COUPON_RATE_0"),
+			ConvertPrice: mapFloat(d, "INITIAL_TRANSFER_PRICE", "TRANSFER_PRICE", "CONVERT_PRICE"),
+			ConvertStart: mapStr(d, "TRANSFER_START_DATE", "CONVERT_START_DATE"),
+		})
 	}
 	return results, nil
 }

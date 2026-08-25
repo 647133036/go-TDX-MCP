@@ -1950,33 +1950,31 @@ func HandleAnnouncement(ctx context.Context, _ Client, request mcp.CallToolReque
 		return mcp.NewToolResultError("code 参数必填"), nil
 	}
 
-	count := 30
-	page := 1
+	count := 10
 	if v, ok := request.GetArguments()["count"].(float64); ok {
 		count = int(v)
 	}
+	page := 1
 	if v, ok := request.GetArguments()["page"].(float64); ok {
 		page = int(v)
 	}
 
 	formData := url.Values{}
-	formData.Set("pageNum", fmt.Sprintf("%d", page))
-	formData.Set("pageSize", fmt.Sprintf("%d", count))
-	formData.Set("stock", code)
-	formData.Set("searchkey", "")
-	formData.Set("category", "")
-	formData.Set("seDate", "")
-
-	formStr := strings.NewReader(formData.Encode())
+	formData.Set("keyWord", code)
+	formData.Set("maxSecNum", "1")
+	formData.Set("maxListNum", fmt.Sprintf("%d", count))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"http://www.cninfo.com.cn/new/hisAnnouncement/query", formStr)
+		"http://www.cninfo.com.cn/new/information/topSearch/detailOfQuery",
+		strings.NewReader(formData.Encode()))
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("创建请求失败: %v", err)), nil
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	req.Header.Set("Referer", "http://www.cninfo.com.cn/")
 
-	httpClient := &http.Client{}
+	httpClient := &http.Client{Timeout: 15 * time.Second}
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("公告查询请求失败: %v", err)), nil
@@ -1992,12 +1990,38 @@ func HandleAnnouncement(ctx context.Context, _ Client, request mcp.CallToolReque
 		return mcp.NewToolResultError(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body))), nil
 	}
 
-	var result interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
+	var raw struct {
+		KeyBoardList            []map[string]interface{} `json:"keyBoardList"`
+		ClassifiedAnnouncements []map[string]interface{} `json:"classifiedAnnouncements"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("解析响应失败: %v", err)), nil
 	}
 
-	return mcp.NewToolResultText(toJSON(result)), nil
+	anns := raw.ClassifiedAnnouncements
+	start := (page - 1) * count
+	if start >= len(anns) {
+		anns = nil
+	} else if start+count < len(anns) {
+		anns = anns[start : start+count]
+	} else {
+		anns = anns[start:]
+	}
+
+	output := map[string]interface{}{
+		"code":          code,
+		"page":          page,
+		"count":         len(anns),
+		"total":         len(raw.ClassifiedAnnouncements),
+		"announcements": anns,
+	}
+	if len(raw.KeyBoardList) > 0 {
+		if v, ok := raw.KeyBoardList[0]["zwjc"].(string); ok && v != "" {
+			output["stock_name"] = v
+		}
+	}
+
+	return mcp.NewToolResultText(toJSON(output)), nil
 }
 
 // HandleFinancial fetches financial statements via Sina Finance API.

@@ -155,6 +155,10 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/scraper/fund-search", s.handleScraperFundSearch)
 	s.mux.HandleFunc("/api/v1/scraper/hkus-quote", s.handleScraperHKUSQuote)
 	s.mux.HandleFunc("/api/v1/scraper/crypto", s.handleScraperCrypto)
+	// Dragon Tiger / Convertible Bond / Futures
+	s.mux.HandleFunc("/api/v1/dragon-tiger", s.handleDragonTiger)
+	s.mux.HandleFunc("/api/v1/convertible-bond", s.handleConvertibleBond)
+	s.mux.HandleFunc("/api/v1/futures-quote", s.handleFuturesQuote)
 	// Offline extras
 	s.mux.HandleFunc("/api/v1/offline/gbbq", s.handleOfflineGBBQ)
 	s.mux.HandleFunc("/api/v1/offline/blocks", s.handleOfflineBlocks)
@@ -1966,6 +1970,53 @@ func (s *Server) handleScraperFundNav(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, nav)
+}
+
+func (s *Server) handleDragonTiger(w http.ResponseWriter, r *http.Request) {
+	client := scraper.NewDragonTigerClient()
+	count := queryInt(r, "count", 50)
+	data, err := client.GetLatest(count)
+	if err != nil {
+		writeError(w, 500, fmt.Sprintf("获取龙虎榜数据失败: %v", err))
+		return
+	}
+	writeJSON(w, map[string]interface{}{"count": len(data), "data": data})
+}
+
+func (s *Server) handleConvertibleBond(w http.ResponseWriter, r *http.Request) {
+	client := scraper.NewConvertibleBondClient()
+	count := queryInt(r, "count", 50)
+	data, err := client.GetAll()
+	if err != nil {
+		writeError(w, 500, fmt.Sprintf("获取可转债数据失败: %v", err))
+		return
+	}
+	if count > 0 && len(data) > count {
+		data = data[:count]
+	}
+	writeJSON(w, map[string]interface{}{"count": len(data), "data": data})
+}
+
+func (s *Server) handleFuturesQuote(w http.ResponseWriter, r *http.Request) {
+	symbols := r.URL.Query().Get("symbols")
+	if symbols == "" {
+		writeError(w, 400, "symbols 参数必填")
+		return
+	}
+	client := scraper.NewFuturesClient()
+	var data []*scraper.FuturesData
+	for _, sym := range strings.Split(symbols, ",") {
+		fd, e := client.GetQuote(strings.TrimSpace(sym))
+		if e != nil {
+			continue
+		}
+		data = append(data, fd)
+	}
+	if len(data) == 0 {
+		writeError(w, 404, "未获取到任何期货数据")
+		return
+	}
+	writeJSON(w, map[string]interface{}{"count": len(data), "data": data})
 }
 
 func (s *Server) handleScraperMarginTrade(w http.ResponseWriter, r *http.Request) {

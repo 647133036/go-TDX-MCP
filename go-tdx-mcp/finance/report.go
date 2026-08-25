@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 type FinancialReport struct {
@@ -31,37 +34,55 @@ func FetchReport(code, reportType string) (*FinancialReport, error) {
 	switch strings.ToLower(reportType) {
 	case "lrb":
 		urlFmt = ProfitURL
-	case "fzb":
+	case "fzb", "zcfzb":
 		urlFmt = BalanceURL
-	case "llb":
+	case "llb", "xjllb":
 		urlFmt = CashFlowURL
 	default:
-		return nil, fmt.Errorf("unsupported report type: %s (use lrb/fzb/llb)", reportType)
+		return nil, fmt.Errorf("unsupported report type: %s (use lrb/zcfzb/xjllb)", reportType)
 	}
 
-	url := fmt.Sprintf(urlFmt, code)
-	hc := &http.Client{Timeout: 15}
-	resp, err := hc.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("fetch financial report failed: %w", err)
-	}
-	defer resp.Body.Close()
+	target := fmt.Sprintf(urlFmt, code)
+	hc := &http.Client{Timeout: 30 * time.Second}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	body, err := readAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read body: %w", err)
-	}
-
-	encoding := detectEncoding(body, resp.Header.Get("Content-Type"))
-	if encoding == "gbk" {
-		converted, err2 := gbkToUTF8(body)
-		if err2 == nil {
-			body = converted
+	var (
+		body    []byte
+		lastErr error
+	)
+	for attempt := 0; attempt < 2; attempt++ {
+		req, err := http.NewRequest("GET", target, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create request failed: %w", err)
 		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+		req.Header.Set("Referer", "https://finance.sina.com.cn/")
+
+		resp, err := hc.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("fetch financial report failed (attempt %d): %w", attempt+1, err)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+			continue
+		}
+		raw, err := readAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = fmt.Errorf("read body: %w", err)
+			continue
+		}
+		body = raw
+		lastErr = nil
+		break
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+
+	if converted, err2 := gbkToUTF8(body); err2 == nil {
+		body = converted
 	}
 
 	periods, err := parseCSVFinancial(body)
@@ -261,16 +282,13 @@ func detectEncoding(body []byte, contentType string) string {
 }
 
 func gbkToUTF8(data []byte) ([]byte, error) {
-	// Strip BOM if present
 	if bytes.HasPrefix(data, []byte{0xef, 0xbb, 0xbf}) {
-		data = data[3:]
+		return data[3:], nil
 	}
-	// Check if already valid UTF-8
 	if isUTF8(data) {
 		return data, nil
 	}
-	// Use simple GBK lookup for common financial terms
-	return minimalGBKConvert(data)
+	return simplifiedchinese.GBK.NewDecoder().Bytes(data)
 }
 
 func isUTF8(data []byte) bool {

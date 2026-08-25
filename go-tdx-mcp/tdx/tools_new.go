@@ -1337,14 +1337,14 @@ func HandleFuturesQuote(ctx context.Context, client Client, request mcp.CallTool
 	futuresClient := scraper.NewFuturesClient()
 	var data []*scraper.FuturesData
 	for _, sym := range symbols {
-		fd, err := futuresClient.GetQuote(sym)
-		if err != nil {
+		fd, e := futuresClient.GetQuote(sym)
+		if e != nil {
 			continue
 		}
 		data = append(data, fd)
 	}
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("获取期货数据失败: %v", err)), nil
+	if len(data) == 0 {
+		return mcp.NewToolResultError("未获取到任何期货数据，请检查 symbols 参数"), nil
 	}
 
 	return mcp.NewToolResultText(toJSON(data)), nil
