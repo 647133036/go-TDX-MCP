@@ -1,4 +1,4 @@
-# TDX Finance MCP v1.0.5
+# TDX Finance MCP v1.0.6
 
 通达信金融数据 MCP 服务器，提供 A 股、港股、美股、加密货币、期货、基金等多市场金融数据服务。
 
@@ -348,6 +348,9 @@ python3 test_all_api.py
 单元测试覆盖 tdx/indicator/factor/backtest/chanlun/finance/scraper/web 等包，共 167 个测试函数。
 
 ## Changelog
+
+### v1.0.6（2026-08-25）
+- 版本发布：main.go 版本号从 1.0.5 更新至 1.0.6，重新构建二进制
 
 ### v1.0.5（2026-08-24）
 - 修复财务报表字段名 GBK 乱码：引入 golang.org/x/text/encoding/simplifiedchinese 真正 GBK→UTF8 转码
