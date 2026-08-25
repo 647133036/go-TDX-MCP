@@ -136,7 +136,7 @@ func main() {
 func buildMCPServer(client *tdx.UnifiedClient) *server.MCPServer {
 	mcpServer := server.NewMCPServer(
 		"TDX Finance MCP",
-		"1.0.4",
+		"1.0.5",
 		server.WithToolCapabilities(true),
 		server.WithPromptCapabilities(true),
 	)
@@ -187,7 +187,7 @@ func toolCount() int {
 
 func runMCP(client *tdx.UnifiedClient) {
 	mcpServer := buildMCPServer(client)
-	fmt.Fprintf(os.Stderr, "TDX Finance MCP v1.0.4 (stdio): %d 工具 + 45 投资技能\n", toolCount())
+	fmt.Fprintf(os.Stderr, "TDX Finance MCP v1.0.5 (stdio): %d 工具 + 45 投资技能\n", toolCount())
 
 	if err := server.ServeStdio(mcpServer); err != nil {
 		fmt.Fprintf(os.Stderr, "MCP 服务错误: %v\n", err)
@@ -204,7 +204,7 @@ func runSSE(client *tdx.UnifiedClient, cfg *Config) {
 		server.WithMessageEndpoint("/message"),
 	)
 
-	fmt.Fprintf(os.Stderr, "TDX Finance MCP v1.0.4 (SSE): %d 工具 + 45 投资技能\n", toolCount())
+	fmt.Fprintf(os.Stderr, "TDX Finance MCP v1.0.5 (SSE): %d 工具 + 45 投资技能\n", toolCount())
 	fmt.Fprintf(os.Stderr, "  SSE 端点: http://0.0.0.0:%d/sse\n", cfg.WebPort)
 	fmt.Fprintf(os.Stderr, "  消息端点: http://0.0.0.0:%d/message\n", cfg.WebPort)
 	fmt.Fprintf(os.Stderr, "  使用 --port=%d 可更改端口\n", cfg.WebPort)
@@ -224,7 +224,7 @@ func runStreamableHTTP(client *tdx.UnifiedClient, cfg *Config) {
 		server.WithStateLess(true),
 	)
 
-	fmt.Fprintf(os.Stderr, "TDX Finance MCP v1.0.4 (Streamable HTTP): %d 工具 + 45 投资技能\n", toolCount())
+	fmt.Fprintf(os.Stderr, "TDX Finance MCP v1.0.5 (Streamable HTTP): %d 工具 + 45 投资技能\n", toolCount())
 	fmt.Fprintf(os.Stderr, "  端点: http://0.0.0.0:%d/mcp\n", cfg.WebPort)
 	fmt.Fprintf(os.Stderr, "  使用 --port=%d 可更改端口\n", cfg.WebPort)
 
@@ -248,7 +248,7 @@ func runCombined(client *tdx.UnifiedClient, cfg *Config) {
 	rootMux.Handle("/", webServer.Handler())
 
 	addr := fmt.Sprintf("0.0.0.0:%d", cfg.WebPort)
-	fmt.Fprintf(os.Stderr, "TDX Finance Combined v1.0.4: %d 工具 + 45 投资技能\n", toolCount())
+	fmt.Fprintf(os.Stderr, "TDX Finance Combined v1.0.5: %d 工具 + 45 投资技能\n", toolCount())
 	fmt.Fprintf(os.Stderr, "  MCP Streamable HTTP: http://0.0.0.0:%d/mcp\n", cfg.WebPort)
 	fmt.Fprintf(os.Stderr, "  REST API 文档:      http://0.0.0.0:%d/\n", cfg.WebPort)
 	fmt.Fprintf(os.Stderr, "  健康检查:           http://0.0.0.0:%d/api/v1/health\n", cfg.WebPort)

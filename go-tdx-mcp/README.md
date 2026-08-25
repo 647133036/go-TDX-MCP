@@ -1,4 +1,4 @@
-# TDX Finance MCP v1.0.4
+# TDX Finance MCP v1.0.5
 
 通达信金融数据 MCP 服务器，提供 A 股、港股、美股、加密货币、期货、基金等多市场金融数据服务。
 
@@ -226,6 +226,9 @@ tdx_macro_data        宏观经济数据（CPI/GDP/PMI/M2）
 | `/api/v1/scraper/fund-nav`、`/fund-holding`、`/fund-search` | 基金数据 |
 | `/api/v1/scraper/margin-trade` | 融资融券 |
 | `/api/v1/scraper/hkus-quote`、`/crypto` | 港美股/加密货币 |
+| `/api/v1/dragon-tiger` | 龙虎榜 |
+| `/api/v1/convertible-bond` | 可转债列表 |
+| `/api/v1/futures-quote` | 期货行情（新浪） |
 | `/api/v1/macro-data`、`/api/v1/news-sentiment` | 宏观/舆情 |
 
 ### 离线数据（依赖本地通达信数据）
@@ -268,9 +271,9 @@ tdx_macro_data        宏观经济数据（CPI/GDP/PMI/M2）
 | **TDX TCP** | 通达信行情服务器（实时行情、K 线、财务、缠论数据），自动选择最快主机 | 否 |
 | **TDX HTTP (TQLEX)** | 通达信 HTTP 网关（tdxhub.icfqs.com:7615，行情、K 线、基础数据） | 是 |
 | **东方财富 (push2delay)** | 实时行情、板块、资金流（延迟数据） | 否 |
-| **东方财富 (datacenter)** | 财务、宏观、龙虎榜、北向、涨跌停、大宗交易 | 否 |
-| **新浪财经** | A 股/港股/美股行情、融资融券、大宗交易 | 否 |
-| **腾讯证券** | 融资融券、期货行情 | 否 |
+| **东方财富 (datacenter)** | 财务、宏观、龙虎榜、可转债、北向、涨跌停、大宗交易 | 否 |
+| **新浪财经** | A 股/港股/美股行情、财务报表、期货行情、融资融券、大宗交易 | 否 |
+| **腾讯证券** | 融资融券 | 否 |
 | **Binance API** | 加密货币行情与 K 线 | 否 |
 | **CoinGecko API** | 加密货币数据备用源 | 否 |
 | **巨潮资讯网** | 公司公告 | 否 |
@@ -345,6 +348,18 @@ python3 test_all_api.py
 单元测试覆盖 tdx/indicator/factor/backtest/chanlun/finance/scraper/web 等包，共 167 个测试函数。
 
 ## Changelog
+
+### v1.0.5（2026-08-24）
+- 修复财务报表字段名 GBK 乱码：引入 golang.org/x/text/encoding/simplifiedchinese 真正 GBK→UTF8 转码
+- 修复财务报表请求超时：原 `Timeout: 15`（15 纳秒）改为 30 秒 + 失败重试 2 次 + UA/Referer
+- 修复龙虎榜数据源：`RPT_BILLBOARD_DAILYDETAIL` 报表不存在 → 改用 `RPT_BILLBOARD_LIST`，字段映射修正（BOARD_TYPE/TOTAL_BUY_AMT/TOTAL_SELL_AMT，净买入=买-卖）
+- 修复可转债字段映射错位：正股代码误取债券代码 → 改取 `CONVERT_STOCK_CODE`；发行规模/转股价/起息/到期/转股开始 6 字段全部修正
+- 修复期货行情数据源：腾讯 qt.gtimg.cn 不支持国内期货合约 → 改用新浪 hq.sinajs.cn（AU0/CU0 等主力连续），名称 GBK 转码 + high/low 兜底
+- 修复公告接口失效：cninfo `hisAnnouncement/query` 返回空 → 改用 `topSearch/detailOfQuery`
+- 修复 `HandleFuturesQuote` 循环变量 `err` 污染外层导致丢弃已采集数据
+- `HandleFinancialMetrics` 从仅查利润表改为综合三表（利润/资产负债/现金流量）合并
+- 新增 3 个 REST 端点：`/api/v1/dragon-tiger`、`/api/v1/convertible-bond`、`/api/v1/futures-quote`
+- 实测 5 类端点均返回干净数据（go test 验证通过）
 
 ### v1.0.4（2026-08-23）
 - 文档修正：README 工具数量更正为实际值（215 个，原误标 443）；分类表更新为 Core 6 / Expanded 64 / V3 8 / New 137
