@@ -38,8 +38,9 @@ Entries discovered by the Agent during task execution should follow this format:
 - Instructions:
   - TDX 官方 Linux 客户端 deb: https://data.tdx.com.cn/kylin/com.tdx.tdxcfv_7.64_amd64.deb （约 123MB，可用 `dpkg-deb -x` 解包）
   - deb 内有价值的组件：官方行情服务器列表 `opt/apps/com.tdx.tdxcfv/files/tc/connect.cfg`（[HQHOST] 段 38 台主站，GBK 编码）；GUI 主程序 tdxw 依赖 CEF/X11，无法在无显示器环境运行
-  - 已集成：`tdx/connectcfg.go` 的 `ParseConnectCfgHosts(path, section)` 解析 connect.cfg（GBK→UTF8），`CollectorConfig.ConnectCfgPath` 设置后 `NewMultiHostCollector` 会把官方主站合并进探测列表（去重、官方优先）
-  - connect.cfg 的拷贝保存在 `tdx/testdata/connect.cfg` 供单元测试使用
+  - 已集成：`tdx/embed.go` 用 `go:embed connect.cfg` 把官方配置编译进二进制；`tdx/connectcfg.go` 解析 GBK INI，`LoadConnectCfgHosts(path, sections)` 默认合并 `[HQHOST]`(38) + `[HFHost]`(2) 共 40 主机并按 IP:port 去重；`MainHostsWithConnectCfg()` 已接入连接池/直连/GetMainHosts 三条探测路径
+  - `CollectorConfig` 支持 `ConnectCfgSections`（自定义 section）与 `ConnectCfgPath`（本地文件覆盖内置配置）
+  - Windows 安装包 https://data.tdx.com.cn/level2/new_tdx64.exe（181MB）无法集成：27 个内嵌条目按序号命名且熵 7.998，非 gzip/xz/lzma/zip，被私有安装器加密（含 t-bl-encrypt.jsx、res_setup.dll），无解密器不可恢复；其中的组件清单（connect.cfg、BlockMap.dll、PTFrame.dll 等）与 Linux deb 的 tc/ 目录一致，Linux deb 已是完整可集成来源
   - 客户端运行时才会下载 vipdoc 离线数据，deb 内不含 .day/gbbq 数据文件
 
 [Project Knowledge Summary]
