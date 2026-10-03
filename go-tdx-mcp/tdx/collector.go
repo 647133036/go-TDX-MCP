@@ -72,13 +72,21 @@ type MultiHostCollector struct {
 
 // CollectorConfig configures the collector.
 type CollectorConfig struct {
-	HostTimeout      time.Duration // per-host connect timeout, default 6s
-	MaxConnsPerHost  int           // connections per host, default 1
-	MaxHosts         int           // max number of hosts to connect, 0 = all
-	RetryCount       int           // retries per request, default 2
-	RetryDelay       time.Duration // initial delay between retries, default 200ms
-	MaxRetryDelay    time.Duration // max delay for exponential backoff, default 2s
-	DetailedBatchSize int          // batch size for detailed quotes, default 20 (32KB limit safe)
+	HostTimeout       time.Duration // per-host connect timeout, default 6s
+	MaxConnsPerHost   int           // connections per host, default 1
+	MaxHosts          int           // max number of hosts to connect, 0 = all
+	RetryCount        int           // retries per request, default 2
+	RetryDelay        time.Duration // initial delay between retries, default 200ms
+	MaxRetryDelay     time.Duration // max delay for exponential backoff, default 2s
+	DetailedBatchSize int           // batch size for detailed quotes, default 20 (32KB limit safe)
+	// ConnectCfgPath, when set, points to a TDX client connect.cfg file
+	// (from the official desktop client). Its hosts are merged with the
+	// bundled official list and gotdx's built-ins so the collector probes
+	// the same servers the desktop client does.
+	ConnectCfgPath string
+	// ConnectCfgSections selects which connect.cfg sections are parsed for
+	// hosts. Defaults to DefaultSections (["HQHOST", "HFHost"]).
+	ConnectCfgSections []string
 }
 
 // DefaultCollectorConfig returns sensible defaults.
@@ -108,7 +116,10 @@ func NewMultiHostCollector(cfg CollectorConfig) (*MultiHostCollector, error) {
 		cfg:   cfg,
 	}
 
-	results := gotdx.ProbeHosts(gotdx.MainHosts(), cfg.HostTimeout)
+	hosts := gotdx.MainHosts()
+	hosts = addConnectCfgHosts(hosts, cfg.ConnectCfgPath, cfg.ConnectCfgSections)
+
+	results := gotdx.ProbeHosts(hosts, cfg.HostTimeout)
 	reachable := make([]gotdx.HostProbeResult, 0)
 	for _, r := range results {
 		if r.Reachable {
@@ -284,7 +295,48 @@ func (c *MultiHostCollector) do(fn func(gc *gotdx.Client) error) error {
 	return fmt.Errorf("failed after %d retries: %w", c.cfg.RetryCount+1, lastErr)
 }
 
+// addConnectCfgHosts merges official connect.cfg hosts into base. The bundled
+// config is used by default; a non-empty path overrides it with an external
+// file so users can point at a freshly downloaded client config.
+func addConnectCfgHosts(base []gotdx.HostInfo, path string, sections []string) []gotdx.HostInfo {
+	hosts, err := LoadConnectCfgHosts(path, sections)
+	if err != nil {
+		log.Printf("collector: skip connect.cfg hosts: %v", err)
+		return base
+	}
+	if len(hosts) == 0 {
+		return base
+	}
+	return mergeHosts(base, hosts)
+}
+
+// mergeHosts appends hosts from extra that are not already present in base
+// (deduplicated by IP:port). Extra entries take precedence and are placed
+// first so freshly-published official servers get probed early.
+func mergeHosts(base, extra []gotdx.HostInfo) []gotdx.HostInfo {
+	seen := make(map[string]bool, len(extra)+len(base))
+	out := make([]gotdx.HostInfo, 0, len(extra)+len(base))
+	for _, h := range extra {
+		addr := h.Address()
+		if seen[addr] {
+			continue
+		}
+		seen[addr] = true
+		out = append(out, h)
+	}
+	for _, h := range base {
+		addr := h.Address()
+		if seen[addr] {
+			continue
+		}
+		seen[addr] = true
+		out = append(out, h)
+	}
+	return out
+}
+
 // isDataError returns true for errors that are NOT transient network issues.
+
 func isDataError(err error) bool {
 	if err == nil {
 		return false

@@ -1890,6 +1890,10 @@ func (s *Server) handleScraper(w http.ResponseWriter, r *http.Request) {
 		sources = []string{"iwcy", "xiaoda", "eastmoney"}
 	}
 	result := scrpr.ScrapeAll(sources, query)
+	if !result.Success {
+		writeError(w, 502, fmt.Sprintf("采集数据失败: %s", result.Error))
+		return
+	}
 	writeJSON(w, result)
 }
 

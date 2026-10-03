@@ -32,6 +32,17 @@ Entries discovered by the Agent during task execution should follow this format:
 ## Entries
 
 [Project Knowledge Summary]
+- Date: 2026-10-03
+- Context: Discovered by Agent while integrating TDX official Linux .deb client components
+- Category: Environment Configuration
+- Instructions:
+  - TDX 官方 Linux 客户端 deb: https://data.tdx.com.cn/kylin/com.tdx.tdxcfv_7.64_amd64.deb （约 123MB，可用 `dpkg-deb -x` 解包）
+  - deb 内有价值的组件：官方行情服务器列表 `opt/apps/com.tdx.tdxcfv/files/tc/connect.cfg`（[HQHOST] 段 38 台主站，GBK 编码）；GUI 主程序 tdxw 依赖 CEF/X11，无法在无显示器环境运行
+  - 已集成：`tdx/connectcfg.go` 的 `ParseConnectCfgHosts(path, section)` 解析 connect.cfg（GBK→UTF8），`CollectorConfig.ConnectCfgPath` 设置后 `NewMultiHostCollector` 会把官方主站合并进探测列表（去重、官方优先）
+  - connect.cfg 的拷贝保存在 `tdx/testdata/connect.cfg` 供单元测试使用
+  - 客户端运行时才会下载 vipdoc 离线数据，deb 内不含 .day/gbbq 数据文件
+
+[Project Knowledge Summary]
 - Date: 2026-08-02
 - Context: Discovered by Agent while troubleshooting EastMoney data source connectivity issues
 - Category: Troubleshooting & Debugging

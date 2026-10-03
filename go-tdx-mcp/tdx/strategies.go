@@ -102,7 +102,7 @@ func (p *TdxPoolClient) fillPool() {
 	if timeout <= 0 {
 		timeout = 6 * time.Second
 	}
-	results := gotdx.ProbeHosts(gotdx.MainHosts(), timeout)
+	results := gotdx.ProbeHosts(MainHostsWithConnectCfg(), timeout)
 
 	// Step 2: Collect reachable host addresses sorted by latency
 	p.hostPool = make([]string, 0, len(results))
@@ -720,7 +720,7 @@ func NewTdxDirectClient(timeoutSec int) *TdxDirectClient {
 	d := &TdxDirectClient{timeoutSec: timeoutSec}
 
 	// Probe all main hosts upfront
-	results := gotdx.ProbeHosts(gotdx.MainHosts(), time.Duration(timeoutSec)*time.Second)
+	results := gotdx.ProbeHosts(MainHostsWithConnectCfg(), time.Duration(timeoutSec)*time.Second)
 	d.hostPool = make([]string, 0, len(results))
 	for _, r := range results {
 		if r.Reachable {
@@ -1229,7 +1229,7 @@ func ProbeHosts() (mainProbes []gotdx.HostProbeResult, exProbes []gotdx.HostProb
 
 // GetMainHosts returns known main market hosts.
 func GetMainHosts() []gotdx.HostInfo {
-	return gotdx.MainHosts()
+	return MainHostsWithConnectCfg()
 }
 
 // GetExHosts returns known extension market hosts.

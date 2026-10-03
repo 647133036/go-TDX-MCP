@@ -1,4 +1,4 @@
-# TDX Finance MCP v1.0.6
+# TDX Finance MCP v1.0.7
 
 通达信金融数据 MCP 服务器，提供 A 股、港股、美股、加密货币、期货、基金等多市场金融数据服务。
 
@@ -280,6 +280,16 @@ go build -o go-tdx-mcp .
 
 > 注意：`push2his.eastmoney.com` 已被阻断不可用，历史 K 线通过 TDX 数据源获取。
 
+### TDX 服务器列表
+
+官方通达信客户端的 `connect.cfg`（Linux `.deb` 包 `tc/connect.cfg`）已编译进二进制，运行时自动与 gotdx 内置主机表合并去重后参与探测，采集链路因此与桌面客户端使用同一批服务器：
+
+- `[HQHOST]`：38 个沪深行情主站（端口 7709）
+- `[HFHost]`：2 个高频冗余主站（端口 7709，与 HQHOST 无 IP 重叠）
+- 合并去重后共 40 个官方主机 + gotdx 内置主机，官方主机排在探测序列前面
+
+`CollectorConfig.ConnectCfgSections` 可自定义参与解析的 section；`CollectorConfig.ConnectCfgPath` 指向本地文件时会覆盖内置配置，便于换成新下载客户端的 `connect.cfg`。所有探测路径（连接池、直连客户端、`GetMainHosts`）统一走 `MainHostsWithConnectCfg()`。
+
 ## 技术栈
 
 - **语言**：Go 1.26（`go.mod` 声明 1.26.0）
@@ -311,7 +321,11 @@ go-tdx-mcp/
 │   ├── health.go         # 服务器健康检测
 │   ├── unified_client.go # 统一客户端（TCP + HTTP 智能路由）
 │   ├── unified_bridge.go # 桥接层（TCP ↔ HTTP 格式转换）
-│   ├── collector.go      # 多主机数据采集器
+ │   ├── collector.go      # 多主机数据采集器
+ │   ├── connectcfg.go     # connect.cfg 解析（GBK INI → 主机列表）
+ │   ├── embed.go          # 内嵌官方 connect.cfg
+ │   ├── connect.cfg       # 官方客户端服务器列表（编译进二进制）
+
 │   ├── tools.go          # 核心工具集（6 个）
 │   ├── tools_expanded.go # 扩展工具集（64 个）
 │   ├── tools_v3.go       # V3 工具集（8 个）
@@ -347,9 +361,21 @@ go vet ./...
 python3 test_all_api.py
 ```
 
-单元测试共 **167 个测试函数**，分布：`tdx`（tools_expanded_test 63 / tools_new_test 53 / strategies_test 12 / listitem_parse_test 5 等）、`scraper`（eastmoney_enhanced 10 / antiban 4 / utils 3）、`indicator`（9）、`web`（server_test 4）。
+单元测试共 **177 个测试函数**，分布：`tdx`（147，含 tools_expanded_test 63 / tools_new_test 53 / strategies_test 12 / connectcfg 9 / listitem_parse_test 5 等）、`scraper`（17，eastmoney_enhanced 10 / antiban 4 / utils 3）、`indicator`（9）、`web`（4）。
 
 ## Changelog
+
+### v1.0.7（2026-10-03）
+- 内嵌官方服务器列表：从通达信 Linux 客户端 `.deb` 解包 `tc/connect.cfg`（12,569 字节，GBK INI），编译进二进制，采集链路自动探测桌面客户端使用的同一批服务器
+  - `tdx/embed.go` + `go:embed connect.cfg`，无需用户在磁盘上放配置文件
+  - `tdx/connectcfg.go`：GBK→UTF8 INI 解析，`HostNameNN`/`IPAddressNN`/`PortNN` 三元组，section 名不区分大小写
+  - 默认解析 `[HQHOST]`（38 主机）+ `[HFHost]`（2 主机），共 40 个官方主机，与 gotdx 内置表按 IP:port 去重合并，官方主机排在探测序列前面
+  - `CollectorConfig` 新增 `ConnectCfgSections`（自定义 section）与 `ConnectCfgPath`（本地文件覆盖内置配置）
+  - `MainHostsWithConnectCfg()` 统一接入连接池、直连客户端、`GetMainHosts` 三条探测路径
+- 修复「采集数据报错」：`ScrapeAll` 增加 `Failures map[string]string` 逐来源错误记录，全部失败时报 `all sources failed (src1: reason; src2: reason)`；`handleScraper` 在无数据时返回 HTTP 502（原为 200）
+- 爬虫请求补 `User-Agent`/`Referer` 头，HTTP 回退同时记录解码失败与空数据失败原因
+- 新增 `tdx/connectcfg_test.go` 9 个用例（38 主机解析、GBK 主机名、缺失 section、缺失文件、多 section 合并、默认 section、内嵌配置、无匹配 section、合并去重排序）
+- 版本发布：main.go 版本号 1.0.6 → 1.0.7，重新构建二进制（24.9MB，含内嵌配置）
 
 ### v1.0.6（2026-08-25）
 - 版本发布：main.go 版本号从 1.0.5 更新至 1.0.6，重新构建二进制

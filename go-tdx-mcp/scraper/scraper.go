@@ -23,6 +23,8 @@ type Result struct {
 	Data    []TableData `json:"data,omitempty"`
 	Error   string     `json:"error,omitempty"`
 	Elapsed string     `json:"elapsed"`
+	// Failures records per-source failure reasons for debugging.
+	Failures map[string]string `json:"failures,omitempty"`
 }
 
 type Scraper struct {
@@ -127,6 +129,7 @@ func (s *Scraper) ScrapeEastMoney(url string) (*Result, error) {
 func (s *Scraper) ScrapeAll(sources []string, query string) *Result {
 	start := time.Now()
 	var tables []TableData
+	failures := make(map[string]string)
 	for _, src := range sources {
 		var url string
 		switch src {
@@ -143,26 +146,46 @@ func (s *Scraper) ScrapeAll(sources []string, query string) *Result {
 			continue
 		}
 		table, err := s.fetchTable(context.Background(), url, "table")
-		if err == nil && len(table.Rows) > 0 {
+		if err != nil {
+			failures[src] = err.Error()
+			continue
+		}
+		if len(table.Rows) > 0 {
 			tables = append(tables, *table)
+		} else {
+			failures[src] = "页面无数据行"
 		}
 	}
 	// Fallback to HTTP-based scraping when chromedp is unavailable
 	if len(tables) == 0 {
-		if srcs := s.httpFallback(sources, query); len(srcs) > 0 {
+		srcs, fbFailures := s.httpFallback(sources, query)
+		if len(srcs) > 0 {
 			tables = append(tables, srcs...)
+		}
+		for k, v := range fbFailures {
+			failures[k+" (http)"] = v
 		}
 	}
 	elapsed := time.Since(start).String()
 	if len(tables) == 0 {
-		return &Result{Success: false, Error: "all sources failed", Elapsed: elapsed}
+		errMsg := "all sources failed"
+		if len(failures) > 0 {
+			var parts []string
+			for src, e := range failures {
+				parts = append(parts, fmt.Sprintf("%s: %s", src, e))
+			}
+			errMsg = "all sources failed (" + strings.Join(parts, "; ") + ")"
+		}
+		return &Result{Success: false, Error: errMsg, Elapsed: elapsed, Failures: failures}
 	}
-	return &Result{Success: true, Data: tables, Elapsed: elapsed}
+	return &Result{Success: true, Data: tables, Elapsed: elapsed, Failures: failures}
 }
 
 // httpFallback performs HTTP-based scraping for available sources.
-func (s *Scraper) httpFallback(sources []string, query string) []TableData {
+// Returns the collected tables and per-source failure reasons.
+func (s *Scraper) httpFallback(sources []string, query string) ([]TableData, map[string]string) {
 	var tables []TableData
+	failures := make(map[string]string)
 	hc := &http.Client{Timeout: 10 * time.Second}
 	for _, src := range sources {
 		var url string
@@ -172,13 +195,26 @@ func (s *Scraper) httpFallback(sources []string, query string) []TableData {
 		default:
 			continue
 		}
-		resp, err := hc.Get(url)
+		req, err := http.NewRequest(http.MethodGet, url, nil)
 		if err != nil {
+			failures[src] = err.Error()
+			continue
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+		req.Header.Set("Referer", "https://quote.eastmoney.com/")
+		resp, err := hc.Do(req)
+		if err != nil {
+			failures[src] = err.Error()
 			continue
 		}
 		var data map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&data)
+		decodeErr := json.NewDecoder(resp.Body).Decode(&data)
 		resp.Body.Close()
+		if decodeErr != nil {
+			failures[src] = "解析响应失败: " + decodeErr.Error()
+			continue
+		}
+		matched := false
 		if d, ok := data["data"].(map[string]interface{}); ok {
 			if ps, ok := d["diff"].([]interface{}); ok && len(ps) > 0 {
 				headers := []string{"code", "name", "price", "change_pct"}
@@ -196,9 +232,13 @@ func (s *Scraper) httpFallback(sources []string, query string) []TableData {
 				}
 				if len(rows) > 0 {
 					tables = append(tables, TableData{Headers: headers, Rows: rows, Source: "http-eastmoney", URL: url})
+					matched = true
 				}
 			}
 		}
+		if !matched {
+			failures[src] = "响应无有效数据"
+		}
 	}
-	return tables
+	return tables, failures
 }
